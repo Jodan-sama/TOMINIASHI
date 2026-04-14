@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TOMI NIASHI — トミ ニアシ / BREATHING INSTRUMENTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="dns-prefetch" href="https://cdn.jsdelivr.net" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@100;200;300;400;500&family=Space+Grotesk:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@100;200;300;400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- WebGL background: animated grid + noise + mouse distortion -->
+  <canvas id="bg-canvas"></canvas>
+
+  <!-- WebGL scene: 3D floating sculptural products -->
+  <canvas id="scene-canvas"></canvas>
+
+  <!-- Noise/grain overlay that regenerates -->
+  <canvas id="grain-canvas"></canvas>
+
+  <!-- SVG line decorations that breathe -->
+  <svg id="line-deco" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="squiggle" x="-20%" y="-20%" width="140%" height="140%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="3" result="t" />
+        <feDisplacementMap in="SourceGraphic" in2="t" scale="3" />
+      </filter>
+    </defs>
+  </svg>
+
+  <!-- Top bar -->
+  <header class="top-bar">
+    <div class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 40 40" class="logo-sigil" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="20" cy="20" r="17" class="sigil-ring" />
+          <circle cx="20" cy="20" r="11" class="sigil-ring-inner" />
+          <line x1="3" y1="20" x2="37" y2="20" class="sigil-line" />
+          <line x1="20" y1="3" x2="20" y2="37" class="sigil-line" />
+          <circle cx="20" cy="20" r="3" class="sigil-core" />
+          <circle cx="20" cy="20" r="5" class="sigil-breath" />
+        </svg>
+      </div>
+      <div class="logo-words">
+        <div class="logo-roman" aria-label="TOMI NIASHI">
+          <span>T</span><span>O</span><span>M</span><span>I</span><span class="sp"> </span><span>N</span><span>I</span><span>A</span><span>S</span><span>H</span><span>I</span>
+        </div>
+        <div class="logo-kana" aria-label="トミ ニアシ">
+          <span>ト</span><span>ミ</span><span class="sp">・</span><span>ニ</span><span>ア</span><span>シ</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="#instruments" data-label="INSTRUMENTS"><span>INSTRUMENTS</span></a>
+      <a href="#process" data-label="PROCESS"><span>PROCESS</span></a>
+      <a href="#atelier" data-label="ATELIER"><span>ATELIER</span></a>
+      <a href="#contact" data-label="CONTACT"><span>CONTACT</span></a>
+    </nav>
+
+    <div class="status-cluster">
+      <div class="status">
+        <div class="status-pulse"></div>
+        <span class="mono">LIVE — <span id="clock">00:00:00</span></span>
+      </div>
+      <div class="mono status-coord" id="coord">35.6762°N · 139.6503°E</div>
+    </div>
+  </header>
+
+  <!-- Thin crosshair that tracks mouse globally -->
+  <div class="crosshair" id="crosshair">
+    <div class="crosshair-h"></div>
+    <div class="crosshair-v"></div>
+    <div class="crosshair-box"></div>
+    <div class="crosshair-label mono" id="crosshair-label">X:000 Y:000</div>
+  </div>
+
+  <!-- Hero section -->
+  <section class="hero">
+    <div class="hero-marker mono">
+      <span class="dot"></span>
+      <span>CATALOGUE · 2026 / 01</span>
+    </div>
+
+    <h1 class="hero-title">
+      <div class="line" data-text="BREATHING"><span>B</span><span>R</span><span>E</span><span>A</span><span>T</span><span>H</span><span>I</span><span>N</span><span>G</span></div>
+      <div class="line" data-text="INSTRUMENTS"><span>I</span><span>N</span><span>S</span><span>T</span><span>R</span><span>U</span><span>M</span><span>E</span><span>N</span><span>T</span><span>S</span></div>
+      <div class="line line-thin" data-text="FROM"><span>F</span><span>R</span><span>O</span><span>M</span></div>
+      <div class="line line-orange" data-text="LIQUID"><span>L</span><span>I</span><span>Q</span><span>U</span><span>I</span><span>D</span></div>
+    </h1>
+
+    <div class="hero-sub">
+      <div class="hero-sub-label mono">THESIS —</div>
+      <p>
+        Every TOMI NIASHI instrument is a living sculpture. Hand-cast
+        borosilicate glass, circulating orange plasma, and interactive
+        sensors produce sound the way an animal breathes — continuously,
+        involuntarily, and never the same twice.
+      </p>
+    </div>
+
+    <div class="hero-scroll mono">
+      <span class="arrow">↓</span>
+      <span>SCROLL / DRIFT</span>
+    </div>
+  </section>
+
+  <!-- Side marquee of running data -->
+  <aside class="side-readout mono">
+    <div class="readout-row"><span>TEMP</span><span id="r-temp">21.4°C</span></div>
+    <div class="readout-row"><span>PLASMA</span><span id="r-plasma">0.834</span></div>
+    <div class="readout-row"><span>FLOW</span><span id="r-flow">↗ 1.21</span></div>
+    <div class="readout-row"><span>HZ</span><span id="r-hz">110.00</span></div>
+    <div class="readout-row"><span>HUE</span><span id="r-hue">17°</span></div>
+    <div class="readout-row"><span>SEED</span><span id="r-seed">4,291,007</span></div>
+  </aside>
+
+  <!-- Products section: 3D objects float in scene, labels/HUD are DOM-positioned -->
+  <section class="products" id="instruments">
+    <div class="section-heading">
+      <div class="mono section-num">§01 — INSTRUMENTS IN CIRCULATION</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="product-hud" id="product-hud">
+      <!-- One HUD label per product, positioned by JS to track 3D object -->
+      <div class="product-label" data-product="0">
+        <div class="plabel-line"></div>
+        <div class="plabel-body">
+          <div class="plabel-num mono">// 01</div>
+          <div class="plabel-name">NEBULA SPHERE</div>
+          <div class="plabel-price mono">¥ 620,000 · $4,200</div>
+          <button class="plabel-open mono">OPEN ⟶</button>
+        </div>
+      </div>
+      <div class="product-label" data-product="1">
+        <div class="plabel-line"></div>
+        <div class="plabel-body">
+          <div class="plabel-num mono">// 02</div>
+          <div class="plabel-name">RESONANT PILLAR</div>
+          <div class="plabel-price mono">¥ 980,000 · $6,800</div>
+          <button class="plabel-open mono">OPEN ⟶</button>
+        </div>
+      </div>
+      <div class="product-label" data-product="2">
+        <div class="plabel-line"></div>
+        <div class="plabel-body">
+          <div class="plabel-num mono">// 03</div>
+          <div class="plabel-name">ORBITAL FLUX</div>
+          <div class="plabel-price mono">¥ 498,000 · $3,400</div>
+          <button class="plabel-open mono">OPEN ⟶</button>
+        </div>
+      </div>
+      <div class="product-label" data-product="3">
+        <div class="plabel-line"></div>
+        <div class="plabel-body">
+          <div class="plabel-num mono">// 04</div>
+          <div class="plabel-name">VERTEBRAE SYNTH</div>
+          <div class="plabel-price mono">¥ 1,340,000 · $9,200</div>
+          <button class="plabel-open mono">OPEN ⟶</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spacer so the section takes up scrollable space -->
+    <div class="product-spacer"></div>
+  </section>
+
+  <!-- Process / manifesto strip -->
+  <section class="manifesto" id="process">
+    <div class="section-heading">
+      <div class="mono section-num">§02 — PROCESS</div>
+      <div class="section-rule"></div>
+    </div>
+    <div class="manifesto-grid">
+      <div class="manifesto-cell">
+        <div class="cell-num mono">1 / CAST</div>
+        <div class="cell-body">Glass is hand-blown over graphite moulds in the atelier's south furnace. Each shell is imperfect on purpose.</div>
+      </div>
+      <div class="manifesto-cell">
+        <div class="cell-num mono">2 / FILL</div>
+        <div class="cell-body">A proprietary orange plasma — silicone-suspended ferrofluid with a phosphor dopant — is vacuum-pumped into the core.</div>
+      </div>
+      <div class="manifesto-cell">
+        <div class="cell-num mono">3 / TUNE</div>
+        <div class="cell-body">Capacitive sensors and piezo contacts are calibrated to the resonant signature of the specific glass vessel.</div>
+      </div>
+      <div class="manifesto-cell">
+        <div class="cell-num mono">4 / BREATHE</div>
+        <div class="cell-body">The instrument runs on its own for 72 hours in the dark before shipping. It begins to breathe.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer / contact -->
+  <footer class="foot" id="contact">
+    <div class="foot-row">
+      <div class="foot-logo">TOMI NIASHI / トミ ニアシ</div>
+      <div class="foot-addr mono">NAKAMEGURO ATELIER<br/>2-CHŌME, MEGURO-KU<br/>TOKYO 153-0062</div>
+      <div class="foot-links mono">
+        <a>commissions@tominiashi.studio</a>
+        <a>+81 3 0000 0000</a>
+        <a>@TOMINIASHI</a>
+      </div>
+      <div class="foot-meta mono">© 2026 / ALL INSTRUMENTS BREATHE</div>
+    </div>
+    <div class="foot-marquee">
+      <div class="marquee-track">
+        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
+        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
+        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
+        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Custom cursor: ring + dot + label -->
+  <div class="cursor-ring" id="cursor-ring"></div>
+  <div class="cursor-dot" id="cursor-dot"></div>
+  <div class="cursor-label mono" id="cursor-label"></div>
+
+  <!-- Product detail modal -->
+  <div class="modal" id="modal" aria-hidden="true">
+    <div class="modal-bg"></div>
+    <div class="modal-shell">
+      <button class="modal-close mono" id="modal-close">CLOSE ✕</button>
+      <div class="modal-inner" id="modal-inner">
+        <!-- populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

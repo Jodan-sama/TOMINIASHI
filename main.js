@@ -9,7 +9,7 @@ import * as THREE from "three";
 // State
 // -----------------------------------------------------------
 const state = {
-  mouse: { x: 0, y: 0, nx: 0, ny: 0, vx: 0, vy: 0, px: 0, py: 0 },
+  mouse: { x: -9999, y: -9999, nx: 0, ny: 0, vx: 0, vy: 0, px: 0, py: 0 },
   scroll: 0,
   time: 0,
   hovered: null,
@@ -952,6 +952,9 @@ function openProductModal(data) {
     modalCamera.aspect = w / h;
     modalCamera.updateProjectionMatrix();
   }, 100);
+
+  // Split modal text into wiggleable chars
+  addModalWiggles();
 }
 
 function closeModal() {
@@ -963,6 +966,8 @@ function closeModal() {
     modalRenderer.dispose();
     modalRenderer = null;
   }
+  // Drop the modal's char registry entries
+  wiggleState.chars = wiggleState.chars.filter((c) => !c.modalChar);
 }
 
 modalClose.addEventListener("click", closeModal);
@@ -1215,8 +1220,355 @@ function animate() {
     lastGrain = t;
   }
 
+  // Text wiggles — every char responds to cursor proximity
+  updateWiggles(t);
+
   requestAnimationFrame(animate);
 }
+// -----------------------------------------------------------
+// WIGGLES — every character of text reacts to cursor proximity.
+// Far away: crisp & readable.  Close: inflated, rotated, blurred,
+// chromatic-aberrated, glossy, dissolving.
+// -----------------------------------------------------------
+
+const WIGGLE_RADIUS = 240; // px — influence range around cursor
+
+// Elements whose text we leave alone (they update constantly with
+// textContent = ..., which would wipe any per-char span structure).
+const NO_WIGGLE_IDS = new Set([
+  "clock",
+  "crosshair-label",
+  "cursor-label",
+  "r-temp",
+  "r-plasma",
+  "r-flow",
+  "r-hz",
+  "r-hue",
+  "r-seed",
+]);
+
+const wiggleState = {
+  chars: [],
+  dirty: false,
+};
+
+function hasFixedAncestor(el) {
+  let p = el;
+  while (p && p !== document.body && p !== document.documentElement) {
+    try {
+      const pos = getComputedStyle(p).position;
+      if (pos === "fixed") return true;
+    } catch (_) {}
+    p = p.parentElement;
+  }
+  return false;
+}
+
+function hasMovingAncestor(el) {
+  // The marquee track is translated on each frame — we need to
+  // re-measure these chars live rather than trust a cache.
+  return !!(el.closest && el.closest(".marquee-track"));
+}
+
+function splitTextNode(tn) {
+  const out = [];
+  const text = tn.nodeValue;
+  const frag = document.createDocumentFragment();
+  for (const ch of text) {
+    if (ch === " " || ch === "\n" || ch === "\t") {
+      frag.appendChild(document.createTextNode(ch));
+    } else {
+      const s = document.createElement("span");
+      s.className = "char";
+      s.textContent = ch;
+      frag.appendChild(s);
+      out.push(s);
+    }
+  }
+  tn.parentNode.replaceChild(frag, tn);
+  return out;
+}
+
+function splitInside(root) {
+  const skipTags = new Set([
+    "SCRIPT",
+    "STYLE",
+    "NOSCRIPT",
+    "CANVAS",
+    "svg",
+    "SVG",
+  ]);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      const p = n.parentElement;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      if (skipTags.has(p.tagName)) return NodeFilter.FILTER_REJECT;
+      // Already split
+      if (p.classList && p.classList.contains("char"))
+        return NodeFilter.FILTER_REJECT;
+      // Blacklisted IDs (live-updating readouts)
+      if (p.id && NO_WIGGLE_IDS.has(p.id)) return NodeFilter.FILTER_REJECT;
+      // Skip if inside an svg anywhere
+      if (p.closest && p.closest("svg")) return NodeFilter.FILTER_REJECT;
+      // Skip pure whitespace
+      if (!n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+
+  const out = [];
+  for (const node of nodes) {
+    for (const s of splitTextNode(node)) out.push(s);
+  }
+  return out;
+}
+
+function indexChar(el) {
+  return {
+    el,
+    cx: 0,
+    cy: 0,
+    seed: Math.random() * 1000,
+    rotSeed: (Math.random() - 0.5) * 2,
+    fixed: hasFixedAncestor(el),
+    reread: hasMovingAncestor(el),
+    lastS: 0,
+    modalChar: false,
+  };
+}
+
+function clearCharStyles(entries) {
+  for (const c of entries) {
+    c.el.style.transform = "";
+    c.el.style.filter = "";
+    c.el.style.opacity = "";
+    c.el.style.textShadow = "";
+  }
+}
+
+function measureChars(entries) {
+  const sx = window.scrollX;
+  const sy = window.scrollY;
+  for (const c of entries) {
+    const r = c.el.getBoundingClientRect();
+    if (c.fixed || c.reread) {
+      c.cx = r.left + r.width / 2;
+      c.cy = r.top + r.height / 2;
+    } else {
+      c.cx = r.left + r.width / 2 + sx;
+      c.cy = r.top + r.height / 2 + sy;
+    }
+  }
+}
+
+function initWiggles() {
+  // 1. Tag existing per-letter spans (logo + hero title) with .char
+  const pre = document.querySelectorAll(
+    ".logo-roman > span, .logo-kana > span, .hero-title .line > span"
+  );
+  pre.forEach((el) => {
+    if (el.textContent.trim() && !el.classList.contains("char")) {
+      el.classList.add("char");
+    }
+  });
+
+  // 2. Walk the whole body and split every other text node
+  splitInside(document.body);
+
+  // 3. Index every .char on the page
+  const all = document.querySelectorAll(".char");
+  all.forEach((el) => {
+    if (el.textContent.trim()) {
+      wiggleState.chars.push(indexChar(el));
+    }
+  });
+
+  // 4. Clear inline styles (in case any were mid-animation), reflow,
+  //    then measure resting positions.
+  clearCharStyles(wiggleState.chars);
+  void document.body.offsetHeight;
+  measureChars(wiggleState.chars);
+
+  // 5. When fonts swap in, re-measure (text metrics may shift).
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => {
+      wiggleState.dirty = true;
+    });
+  }
+}
+
+function addModalWiggles() {
+  // Drop any previous modal entries (we rebuild on each open)
+  wiggleState.chars = wiggleState.chars.filter((c) => !c.modalChar);
+  // Split modal innards
+  const fresh = splitInside(modalInner);
+  const batch = [];
+  fresh.forEach((el) => {
+    const entry = indexChar(el);
+    entry.fixed = true; // modal is position: fixed
+    entry.modalChar = true;
+    wiggleState.chars.push(entry);
+    batch.push(entry);
+  });
+  clearCharStyles(batch);
+  // Measure on next frame so modal is laid out
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => measureChars(batch));
+  });
+}
+
+function updateWiggles(t) {
+  // Re-measure everything when layout might have changed
+  if (wiggleState.dirty) {
+    clearCharStyles(wiggleState.chars);
+    void document.body.offsetHeight;
+    measureChars(wiggleState.chars);
+    wiggleState.dirty = false;
+  }
+
+  const mx = state.mouse.x;
+  const my = state.mouse.y;
+  const sx = window.scrollX;
+  const sy = window.scrollY;
+  const R = WIGGLE_RADIUS;
+  const R2 = R * R;
+  const ambFreq = 2.0;
+
+  const N = wiggleState.chars.length;
+  for (let i = 0; i < N; i++) {
+    const c = wiggleState.chars[i];
+
+    // Chars inside a moving parent (marquee) need live rect reads.
+    if (c.reread) {
+      const r = c.el.getBoundingClientRect();
+      c.cx = r.left + r.width / 2;
+      c.cy = r.top + r.height / 2;
+    }
+
+    const ccx = c.fixed || c.reread ? c.cx : c.cx - sx;
+    const ccy = c.fixed || c.reread ? c.cy : c.cy - sy;
+
+    const dx = mx - ccx;
+    const dy = my - ccy;
+    const d2 = dx * dx + dy * dy;
+
+    if (d2 > R2) {
+      // Out of effect range — just ambient breath, and only write
+      // when we were previously wiggling OR on a lazy stagger schedule.
+      if (c.lastS > 0.005) {
+        const amb = Math.sin(t * ambFreq + c.seed) * 0.015;
+        const style = c.el.style;
+        style.transform = `scale(${(1 + amb).toFixed(4)})`;
+        style.filter = "";
+        style.opacity = "";
+        style.textShadow = "";
+        c.lastS = 0;
+      } else if (i % 90 === (frame || 0) % 90) {
+        // very occasional ambient update to keep things lively
+        const amb = Math.sin(t * ambFreq + c.seed) * 0.015;
+        c.el.style.transform = `scale(${(1 + amb).toFixed(4)})`;
+      }
+      continue;
+    }
+
+    const d = Math.sqrt(d2);
+    const s = 1 - d / R; // 0..1, 1 = cursor dead on char
+    const ss = s * s; // sharpen falloff
+    const sss = ss * s; // even sharper for blur/gloss
+    c.lastS = s;
+
+    // Unit vector pointing AWAY from cursor
+    const invD = 1 / (d + 0.5);
+    const dirX = -dx * invD;
+    const dirY = -dy * invD;
+
+    // Push (repulsion) + wiggle jitter (high-freq sin)
+    const push = ss * 30;
+    const wf = 5 + (c.seed % 3);
+    const wigAmp = ss * 14;
+    const wigX = Math.sin(t * wf + c.seed) * wigAmp;
+    const wigY = Math.cos(t * (wf + 0.3) + c.seed * 1.7) * wigAmp;
+
+    // Rotation: random per-char bias + flicker
+    const rot =
+      c.rotSeed * ss * 55 + Math.sin(t * 9 + c.seed) * ss * 28;
+
+    // Inflate + ambient breath
+    const amb = Math.sin(t * ambFreq + c.seed) * 0.015;
+    const scale = 1 + amb + ss * 1.4;
+
+    // Blur for dissolve
+    const blur = sss * 9;
+
+    // Opacity drop — never fully invisible so mass is still felt
+    const opacity = 1 - ss * 0.45;
+
+    // Gloss: chromatic aberration + white bloom
+    const caX = ss * 5;
+    const caY = ss * 2;
+    const bloom = sss * 3;
+
+    const tx = dirX * push + wigX;
+    const ty = dirY * push + wigY;
+
+    const style = c.el.style;
+    style.transform =
+      "translate(" +
+      tx.toFixed(1) +
+      "px," +
+      ty.toFixed(1) +
+      "px) scale(" +
+      scale.toFixed(3) +
+      ") rotate(" +
+      rot.toFixed(1) +
+      "deg)";
+    style.filter = blur > 0.15 ? "blur(" + blur.toFixed(2) + "px)" : "";
+    style.opacity = opacity.toFixed(3);
+    style.textShadow =
+      ss > 0.03
+        ? "0 0 " +
+          bloom.toFixed(1) +
+          "px rgba(255,255,255," +
+          (ss * 0.7).toFixed(2) +
+          ")," +
+          caX.toFixed(1) +
+          "px " +
+          caY.toFixed(1) +
+          "px 0 rgba(255,69,0," +
+          (ss * 0.85).toFixed(2) +
+          ")," +
+          (-caX).toFixed(1) +
+          "px " +
+          (-caY).toFixed(1) +
+          "px 0 rgba(10,150,230," +
+          (ss * 0.45).toFixed(2) +
+          ")"
+        : "";
+  }
+}
+
+// Layout changes → remeasure
+window.addEventListener(
+  "scroll",
+  () => {
+    wiggleState.dirty = true;
+  },
+  { passive: true }
+);
+window.addEventListener("resize", () => {
+  wiggleState.dirty = true;
+});
+
+// Kick off the whole system once the DOM is parsed
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initWiggles);
+} else {
+  initWiggles();
+}
+
 drawGrain();
 animate();
 

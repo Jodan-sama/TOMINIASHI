@@ -67,6 +67,22 @@ button {
 }
 
 /* ============================================================
+   WIGGLES — every character responds to cursor proximity.
+   JS drives inline transform / filter / opacity / text-shadow,
+   so we kill any CSS transitions or keyframes on these spans.
+   ============================================================ */
+
+.char {
+  display: inline-block;
+  transform-origin: 50% 50%;
+  vertical-align: baseline;
+  transition: none !important;
+  animation: none !important;
+  will-change: transform, filter, opacity;
+  backface-visibility: hidden;
+}
+
+/* ============================================================
    CANVAS LAYERS
    ============================================================ */
 

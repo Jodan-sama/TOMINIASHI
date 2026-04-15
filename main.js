@@ -781,17 +781,19 @@ const _v3 = new THREE.Vector3();
 const _box = new THREE.Box3();
 
 function buildCharMesh(ch, material, size, italic = 0) {
-  // Chubby, balloon-bubble letter: shallow depth + soft, generous bevel.
+  // Nearly-flat balloon letter: a thin puffed shape, not a deep prism.
+  // Depth is intentionally tiny so edges never dominate the view, bevel
+  // is just enough to catch a highlight.
   const geom = new TextGeometry(ch, {
     font: text3D.font,
     size,
-    depth: size * 0.08,
+    depth: size * 0.015,
     curveSegments: 8,
     bevelEnabled: true,
-    bevelThickness: size * 0.035,
-    bevelSize: size * 0.028,
+    bevelThickness: size * 0.012,
+    bevelSize: size * 0.014,
     bevelOffset: 0,
-    bevelSegments: 5,
+    bevelSegments: 4,
   });
   geom.computeBoundingBox();
   const bb = geom.boundingBox;
@@ -812,14 +814,14 @@ function buildHero3D() {
   scene.add(group);
 
   const lines = [
-    { text: "BREATHING", material: chromeMat, size: 0.58, italic: 0 },
-    { text: "INSTRUMENTS", material: chromeMat, size: 0.58, italic: 0 },
-    { text: "FROM", material: inkTextMat, size: 0.4, italic: 0 },
-    { text: "LIQUID", material: orangeTextMat, size: 0.62, italic: 0.08 },
+    { text: "BREATHING", material: chromeMat, size: 0.42, italic: 0 },
+    { text: "INSTRUMENTS", material: chromeMat, size: 0.42, italic: 0 },
+    { text: "FROM", material: inkTextMat, size: 0.30, italic: 0 },
+    { text: "LIQUID", material: orangeTextMat, size: 0.46, italic: 0.06 },
   ];
 
-  const lineGap = 0.08; // vertical gap between lines
-  const charGap = 0.05; // tracking between chars
+  const lineGap = 0.06; // vertical gap between lines
+  const charGap = 0.04; // tracking between chars
 
   let yCursor = 0;
 
@@ -874,22 +876,23 @@ function buildHero3D() {
 
 function layoutHero3D() {
   if (!text3D.hero) return;
-  // Scale to fit viewport width — concise, bubble-y, leaves room to breathe.
+  // Compact. Target ~32% viewport width / ~36% height so the title stays
+  // up in its own area and never crowds the rest of the page.
   const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
   const vw = vh * camera.aspect;
   text3D.hero.scale.setScalar(1);
+  // Neutral rotation during measure so bbox reflects true extents.
+  text3D.hero.rotation.set(0, 0, 0);
   _box.setFromObject(text3D.hero);
   const natW = _box.max.x - _box.min.x;
   const natH = _box.max.y - _box.min.y;
-  // Target: 45% of viewport width OR 48% of viewport height — compact, leaves
-  // breathing room around it so inflate-on-hover doesn't swallow the screen.
-  const sw = (vw * 0.45) / natW;
-  const sh = (vh * 0.48) / natH;
+  const sw = (vw * 0.32) / natW;
+  const sh = (vh * 0.36) / natH;
   const s = Math.min(sw, sh);
   text3D.hero.scale.setScalar(s);
-  // Position slightly above center (hero is upper area of landing)
-  text3D.hero.position.set(0, 0, 0.2);
-  text3D.heroBaseY = 0;
+  // Sit in upper-third of viewport like a title, not dead center.
+  text3D.hero.position.set(0, vh * 0.12, 0.2);
+  text3D.heroBaseY = vh * 0.12;
 }
 
 function buildMarquee3D() {
@@ -1002,9 +1005,9 @@ function updateText3D(t) {
     const worldPerPx = vh / H;
     text3D.hero.position.y =
       text3D.heroBaseY + state.scroll * worldPerPx * 1.1;
-    // Very subtle group-level tilt from cursor — just enough to feel alive
-    text3D.hero.rotation.y = state.mouse.nx * 0.04;
-    text3D.hero.rotation.x = -state.mouse.ny * 0.03;
+    // No group-level tilt — keeping the text face-on guarantees we never see
+    // its sides, which would otherwise look like long dark bars.
+    text3D.hero.rotation.set(0, 0, 0);
 
     for (let i = 0; i < text3D.heroChars.length; i++) {
       const c = text3D.heroChars[i];
@@ -1023,18 +1026,15 @@ function updateText3D(t) {
       if (d2 < R2) s = 1 - Math.sqrt(d2) / R;
       const ss = s * s;
 
-      // Gentle ambient breathing + small pop-on-hover — max ~1.35x
-      const amb = Math.sin(t * 1.6 + c.seed) * 0.025;
-      const scale = 1 + amb + ss * 0.35;
+      // Gentle ambient breathing + small pop-on-hover — max ~1.22x
+      const amb = Math.sin(t * 1.6 + c.seed) * 0.02;
+      const scale = 1 + amb + ss * 0.2;
       c.mesh.scale.setScalar(scale);
 
-      // Barely-there rotation so letters look alive, not spinning
-      const rx = Math.sin(t * 1.8 + c.seed) * 0.02 + c.rotSeed * ss * 0.08;
-      const ry = Math.sin(t * 1.2 + c.seed * 0.7) * ss * 0.1;
-      const rz = c.italicBase + Math.sin(t * 3.0 + c.seed) * ss * 0.05;
-      c.mesh.rotation.x = rx;
-      c.mesh.rotation.y = ry;
-      c.mesh.rotation.z = rz;
+      // Keep letters face-on: only Z rotation (italic + tiny wobble), no X/Y
+      // which would expose their extruded sides.
+      const rz = c.italicBase + Math.sin(t * 2.5 + c.seed) * ss * 0.04;
+      c.mesh.rotation.set(0, 0, rz);
     }
   }
 
@@ -1042,9 +1042,9 @@ function updateText3D(t) {
   if (text3D.marquee) {
     const speed = 0.22; // world units/sec — calmer ribbon
     const x = -((t * speed) % text3D.marqueeLoopWidth);
-    // Scale the ribbon so letters are ~4% of viewport height — a concise strip
+    // Scale the ribbon so letters are ~3.5% of viewport height — a thin strip
     const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
-    const targetWorldH = vh * 0.045;
+    const targetWorldH = vh * 0.035;
     const natH = 0.32; // buildCharMesh size for marquee
     const sc = targetWorldH / natH;
     text3D.marquee.scale.setScalar(sc);
@@ -1067,14 +1067,13 @@ function updateText3D(t) {
       if (d2 < R2) s = 1 - Math.sqrt(d2) / R;
       const ss = s * s;
 
-      const amb = Math.sin(t * 2.0 + c.seed) * 0.02;
-      const scale = 1 + amb + ss * 0.3;
+      const amb = Math.sin(t * 2.0 + c.seed) * 0.015;
+      const scale = 1 + amb + ss * 0.2;
       c.mesh.scale.setScalar(scale);
 
-      const rz = c.italicBase + Math.sin(t * 3.5 + c.seed) * ss * 0.06;
-      const rx = c.rotSeed * ss * 0.05;
-      c.mesh.rotation.z = rz;
-      c.mesh.rotation.x = rx;
+      // Same face-on policy as the hero — only Z rotation.
+      const rz = c.italicBase + Math.sin(t * 3.0 + c.seed) * ss * 0.04;
+      c.mesh.rotation.set(0, 0, rz);
     }
   }
 }

@@ -19,7 +19,7 @@
   <!-- WebGL background: animated grid + noise + mouse distortion -->
   <canvas id="bg-canvas"></canvas>
 
-  <!-- WebGL scene: 3D floating sculptural products -->
+  <!-- WebGL scene: sculptural products arranged along Z-axis corridor -->
   <canvas id="scene-canvas"></canvas>
 
   <!-- Noise/grain overlay that regenerates -->
@@ -59,10 +59,10 @@
     </div>
 
     <nav class="nav">
-      <a href="#instruments" data-label="INSTRUMENTS"><span>INSTRUMENTS</span></a>
-      <a href="#process" data-label="PROCESS"><span>PROCESS</span></a>
-      <a href="#atelier" data-label="ATELIER"><span>ATELIER</span></a>
-      <a href="#contact" data-label="CONTACT"><span>CONTACT</span></a>
+      <a data-station="1" data-label="INSTRUMENTS"><span>INSTRUMENTS</span></a>
+      <a data-station="0" data-label="THESIS"><span>THESIS</span></a>
+      <a data-station="5" data-label="ATELIER"><span>ATELIER</span></a>
+      <a data-station="5" data-label="CONTACT"><span>CONTACT</span></a>
     </nav>
 
     <div class="status-cluster">
@@ -82,36 +82,6 @@
     <div class="crosshair-label mono" id="crosshair-label">X:000 Y:000</div>
   </div>
 
-  <!-- Hero section -->
-  <section class="hero">
-    <div class="hero-marker mono">
-      <span class="dot"></span>
-      <span>CATALOGUE · 2026 / 01</span>
-    </div>
-
-    <h1 class="hero-title">
-      <div class="line" data-text="BREATHING"><span>B</span><span>R</span><span>E</span><span>A</span><span>T</span><span>H</span><span>I</span><span>N</span><span>G</span></div>
-      <div class="line" data-text="INSTRUMENTS"><span>I</span><span>N</span><span>S</span><span>T</span><span>R</span><span>U</span><span>M</span><span>E</span><span>N</span><span>T</span><span>S</span></div>
-      <div class="line line-thin" data-text="FROM"><span>F</span><span>R</span><span>O</span><span>M</span></div>
-      <div class="line line-orange" data-text="LIQUID"><span>L</span><span>I</span><span>Q</span><span>U</span><span>I</span><span>D</span></div>
-    </h1>
-
-    <div class="hero-sub">
-      <div class="hero-sub-label mono">THESIS —</div>
-      <p>
-        Every TOMI NIASHI instrument is a living sculpture. Hand-cast
-        borosilicate glass, circulating orange plasma, and interactive
-        sensors produce sound the way an animal breathes — continuously,
-        involuntarily, and never the same twice.
-      </p>
-    </div>
-
-    <div class="hero-scroll mono">
-      <span class="arrow">↓</span>
-      <span>SCROLL / DRIFT</span>
-    </div>
-  </section>
-
   <!-- Side marquee of running data -->
   <aside class="side-readout mono">
     <div class="readout-row"><span>TEMP</span><span id="r-temp">21.4°C</span></div>
@@ -122,104 +92,170 @@
     <div class="readout-row"><span>SEED</span><span id="r-seed">4,291,007</span></div>
   </aside>
 
-  <!-- Products section: 3D objects float in scene, labels/HUD are DOM-positioned -->
-  <section class="products" id="instruments">
-    <div class="section-heading">
-      <div class="mono section-num">§01 — INSTRUMENTS IN CIRCULATION</div>
-      <div class="section-rule"></div>
-    </div>
+  <!-- ============================================================
+       SPATIAL STATIONS — camera dollies along a Z-axis corridor.
+       Each station is a HUD panel that fades in when its index is
+       current. Products 1-4 have WebGL sculptures behind them at
+       the matching world-Z depths (see main.js layouts).
+       ============================================================ -->
+  <main class="station-deck" id="station-deck">
 
-    <div class="product-hud" id="product-hud">
-      <!-- One HUD label per product, positioned by JS to track 3D object -->
-      <div class="product-label" data-product="0">
-        <div class="plabel-line"></div>
-        <div class="plabel-body">
-          <div class="plabel-num mono">// 01</div>
-          <div class="plabel-name">NEBULA SPHERE</div>
-          <div class="plabel-price mono">¥ 620,000 · $4,200</div>
-          <button class="plabel-open mono">OPEN ⟶</button>
-        </div>
+    <!-- 0: THESIS / INTRO -->
+    <section class="station-hud" data-station="0">
+      <div class="station-num mono">§00 — ENTER</div>
+      <div class="station-rule"></div>
+      <div class="station-title">
+        <span class="stitle-lead mono">TOMI NIASHI · トミ ニアシ</span>
+        <h1 class="stitle-main">Breathing instruments <em>from liquid.</em></h1>
       </div>
-      <div class="product-label" data-product="1">
-        <div class="plabel-line"></div>
-        <div class="plabel-body">
-          <div class="plabel-num mono">// 02</div>
-          <div class="plabel-name">RESONANT PILLAR</div>
-          <div class="plabel-price mono">¥ 980,000 · $6,800</div>
-          <button class="plabel-open mono">OPEN ⟶</button>
-        </div>
+      <p class="station-body">
+        Every TOMI NIASHI instrument is a living sculpture. Hand-cast
+        borosilicate glass, circulating orange plasma, and capacitive
+        sensors produce sound the way an animal breathes — continuously,
+        involuntarily, and never the same twice.
+      </p>
+      <div class="station-foot mono">
+        <span>FORWARD →  to enter the atelier</span>
+        <span class="sep">·</span>
+        <span>WHEEL / ARROWS / SPACE</span>
       </div>
-      <div class="product-label" data-product="2">
-        <div class="plabel-line"></div>
-        <div class="plabel-body">
-          <div class="plabel-num mono">// 03</div>
-          <div class="plabel-name">ORBITAL FLUX</div>
-          <div class="plabel-price mono">¥ 498,000 · $3,400</div>
-          <button class="plabel-open mono">OPEN ⟶</button>
-        </div>
-      </div>
-      <div class="product-label" data-product="3">
-        <div class="plabel-line"></div>
-        <div class="plabel-body">
-          <div class="plabel-num mono">// 04</div>
-          <div class="plabel-name">VERTEBRAE SYNTH</div>
-          <div class="plabel-price mono">¥ 1,340,000 · $9,200</div>
-          <button class="plabel-open mono">OPEN ⟶</button>
-        </div>
-      </div>
-    </div>
+    </section>
 
-    <!-- Spacer so the section takes up scrollable space -->
-    <div class="product-spacer"></div>
-  </section>
+    <!-- 1: NEBULA SPHERE -->
+    <section class="station-hud" data-station="1" data-product="0">
+      <div class="station-num mono">§01 — INSTRUMENT 01 / 04</div>
+      <div class="station-rule"></div>
+      <div class="station-title">
+        <span class="stitle-lead mono">ネビュラ・スフィア</span>
+        <h2 class="stitle-main">Nebula Sphere</h2>
+      </div>
+      <div class="station-specs mono">
+        <div><span>VESSEL</span><span>Ø 22cm · BOROSILICATE</span></div>
+        <div><span>PLASMA</span><span>TN-ORANGE 14 · 180ml</span></div>
+        <div><span>RANGE</span><span>40 Hz – 12 kHz</span></div>
+        <div><span>WEIGHT</span><span>3.4 kg</span></div>
+      </div>
+      <div class="station-actions">
+        <div class="station-price mono">¥ 620,000  ·  $4,200</div>
+        <button class="station-open mono" data-product="0">OPEN DOSSIER ⟶</button>
+      </div>
+    </section>
 
-  <!-- Process / manifesto strip -->
-  <section class="manifesto" id="process">
-    <div class="section-heading">
-      <div class="mono section-num">§02 — PROCESS</div>
-      <div class="section-rule"></div>
-    </div>
-    <div class="manifesto-grid">
-      <div class="manifesto-cell">
-        <div class="cell-num mono">1 / CAST</div>
-        <div class="cell-body">Glass is hand-blown over graphite moulds in the atelier's south furnace. Each shell is imperfect on purpose.</div>
+    <!-- 2: RESONANT PILLAR -->
+    <section class="station-hud" data-station="2" data-product="1">
+      <div class="station-num mono">§02 — INSTRUMENT 02 / 04</div>
+      <div class="station-rule"></div>
+      <div class="station-title">
+        <span class="stitle-lead mono">レゾナント・ピラー</span>
+        <h2 class="stitle-main">Resonant Pillar</h2>
       </div>
-      <div class="manifesto-cell">
-        <div class="cell-num mono">2 / FILL</div>
-        <div class="cell-body">A proprietary orange plasma — silicone-suspended ferrofluid with a phosphor dopant — is vacuum-pumped into the core.</div>
+      <div class="station-specs mono">
+        <div><span>HEIGHT</span><span>120 cm</span></div>
+        <div><span>PLASMA</span><span>TN-ORANGE 14 · 720ml</span></div>
+        <div><span>RANGE</span><span>22 Hz – 18 kHz</span></div>
+        <div><span>WEIGHT</span><span>14 kg</span></div>
       </div>
-      <div class="manifesto-cell">
-        <div class="cell-num mono">3 / TUNE</div>
-        <div class="cell-body">Capacitive sensors and piezo contacts are calibrated to the resonant signature of the specific glass vessel.</div>
+      <div class="station-actions">
+        <div class="station-price mono">¥ 980,000  ·  $6,800</div>
+        <button class="station-open mono" data-product="1">OPEN DOSSIER ⟶</button>
       </div>
-      <div class="manifesto-cell">
-        <div class="cell-num mono">4 / BREATHE</div>
-        <div class="cell-body">The instrument runs on its own for 72 hours in the dark before shipping. It begins to breathe.</div>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Footer / contact -->
-  <footer class="foot" id="contact">
-    <div class="foot-row">
-      <div class="foot-logo">TOMI NIASHI / トミ ニアシ</div>
-      <div class="foot-addr mono">NAKAMEGURO ATELIER<br/>2-CHŌME, MEGURO-KU<br/>TOKYO 153-0062</div>
-      <div class="foot-links mono">
+    <!-- 3: ORBITAL FLUX -->
+    <section class="station-hud" data-station="3" data-product="2">
+      <div class="station-num mono">§03 — INSTRUMENT 03 / 04</div>
+      <div class="station-rule"></div>
+      <div class="station-title">
+        <span class="stitle-lead mono">オービタル・フラックス</span>
+        <h2 class="stitle-main">Orbital Flux</h2>
+      </div>
+      <div class="station-specs mono">
+        <div><span>DIAMETER</span><span>38 cm</span></div>
+        <div><span>PLASMA</span><span>TN-ORANGE 19 · 12ml</span></div>
+        <div><span>RANGE</span><span>60 Hz – 16 kHz</span></div>
+        <div><span>WEIGHT</span><span>1.9 kg</span></div>
+      </div>
+      <div class="station-actions">
+        <div class="station-price mono">¥ 498,000  ·  $3,400</div>
+        <button class="station-open mono" data-product="2">OPEN DOSSIER ⟶</button>
+      </div>
+    </section>
+
+    <!-- 4: VERTEBRAE SYNTH -->
+    <section class="station-hud" data-station="4" data-product="3">
+      <div class="station-num mono">§04 — INSTRUMENT 04 / 04</div>
+      <div class="station-rule"></div>
+      <div class="station-title">
+        <span class="stitle-lead mono">バーテブレ・シンセ</span>
+        <h2 class="stitle-main">Vertebrae Synth</h2>
+      </div>
+      <div class="station-specs mono">
+        <div><span>LENGTH</span><span>85 cm · 7 SEGMENTS</span></div>
+        <div><span>PLASMA</span><span>TN-ORANGE 14 · 280ml</span></div>
+        <div><span>RANGE</span><span>30 Hz – 19 kHz</span></div>
+        <div><span>WEIGHT</span><span>7.1 kg</span></div>
+      </div>
+      <div class="station-actions">
+        <div class="station-price mono">¥ 1,340,000  ·  $9,200</div>
+        <button class="station-open mono" data-product="3">OPEN DOSSIER ⟶</button>
+      </div>
+    </section>
+
+    <!-- 5: ATELIER / CONTACT -->
+    <section class="station-hud" data-station="5">
+      <div class="station-num mono">§05 — ATELIER &amp; CONTACT</div>
+      <div class="station-rule"></div>
+      <div class="station-title">
+        <span class="stitle-lead mono">NAKAMEGURO · 中目黒</span>
+        <h2 class="stitle-main">The instrument runs itself for 72 hours before shipping.</h2>
+      </div>
+      <div class="station-process mono">
+        <div><span>1 / CAST</span><span>Glass hand-blown over graphite moulds, south furnace.</span></div>
+        <div><span>2 / FILL</span><span>Orange plasma vacuum-pumped into the core vessel.</span></div>
+        <div><span>3 / TUNE</span><span>Capacitive + piezo sensors tuned per unit resonance.</span></div>
+        <div><span>4 / BREATHE</span><span>Runs solo for 72 hrs in the dark before shipping.</span></div>
+      </div>
+      <div class="station-contact mono">
         <a>commissions@tominiashi.studio</a>
+        <span class="sep">·</span>
         <a>+81 3 0000 0000</a>
+        <span class="sep">·</span>
         <a>@TOMINIASHI</a>
       </div>
-      <div class="foot-meta mono">© 2026 / ALL INSTRUMENTS BREATHE</div>
-    </div>
-    <div class="foot-marquee">
-      <div class="marquee-track">
-        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
-        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
-        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
-        <span>BREATHING · INSTRUMENTS · FROM · LIQUID ·</span>
+      <div class="station-addr mono">
+        NAKAMEGURO ATELIER · 2-CHŌME, MEGURO-KU · TOKYO 153-0062
       </div>
+    </section>
+
+  </main>
+
+  <!-- Spatial navigation HUD: forward/back + progress dots -->
+  <div class="scene-nav" id="scene-nav">
+    <button class="scene-arrow scene-arrow-prev mono" id="nav-prev" aria-label="Backward">
+      <span class="arr">←</span>
+      <span class="lbl">BACK</span>
+    </button>
+    <div class="scene-dots" id="scene-dots">
+      <button class="sdot" data-station="0" aria-label="Station 0"></button>
+      <button class="sdot" data-station="1" aria-label="Station 1"></button>
+      <button class="sdot" data-station="2" aria-label="Station 2"></button>
+      <button class="sdot" data-station="3" aria-label="Station 3"></button>
+      <button class="sdot" data-station="4" aria-label="Station 4"></button>
+      <button class="sdot" data-station="5" aria-label="Station 5"></button>
     </div>
-  </footer>
+    <button class="scene-arrow scene-arrow-next mono" id="nav-next" aria-label="Forward">
+      <span class="lbl">FORWARD</span>
+      <span class="arr">→</span>
+    </button>
+  </div>
+
+  <!-- Station indicator / depth readout (top-right of scene) -->
+  <div class="scene-indicator mono" id="scene-indicator">
+    <span class="sind-num" id="sind-num">00</span>
+    <span class="sind-sep">/</span>
+    <span class="sind-total">06</span>
+    <span class="sind-z" id="sind-z">Z +12.0</span>
+  </div>
 
   <!-- Custom cursor: ring + dot + label -->
   <div class="cursor-ring" id="cursor-ring"></div>

@@ -34,15 +34,17 @@ body {
   color: var(--ink);
   font-family: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
   font-weight: 400;
-  overflow-x: hidden;
+  overflow: hidden;
   cursor: none;
   -webkit-font-smoothing: antialiased;
   letter-spacing: 0.01em;
+  overscroll-behavior: none;
 }
 
 body {
   position: relative;
-  min-height: 100vh;
+  height: 100vh;
+  width: 100vw;
 }
 
 a {
@@ -80,171 +82,6 @@ button {
   animation: none !important;
   will-change: transform, filter, opacity;
   backface-visibility: hidden;
-}
-
-/* ============================================================
-   HERO TITLE + MARQUEE — INFLATED BALLOON LETTERS
-   Each letter is a balloon in the shape of a glyph:
-   - Radial gradient fill → spherical highlight + shaded edges
-   - Paint-order: stroke fill → inflated rim under the fill
-   - Layered drop-shadows on parent .line → float + gloss halo
-   - Stronger font-weight so the shape reads as chubby, not thin
-   The wiggle system handles per-letter shrink/grow on proximity
-   and a gentle ambient breathe at rest.
-
-   IMPORTANT: wiggle writes inline `filter: blur(...)` onto each
-   .char span during proximity. If drop-shadow lives on the span
-   it gets clobbered — so drop-shadow sits on the parent line.
-   ============================================================ */
-
-/* Fatter base weight → the shape already reads as inflated */
-.hero-title {
-  font-weight: 700;
-  letter-spacing: -0.05em;
-  /* Real 3D scene — per-letter rotateX/rotateY + translateZ are applied
-     by the wiggle hot loop. Tight perspective = strong foreshortening,
-     so the letters read as volumetric objects hung at different depths. */
-  perspective: 600px;
-  perspective-origin: 50% 40%;
-  transform-style: preserve-3d;
-}
-.hero-title .line {
-  transform-style: preserve-3d;
-}
-.hero-title .line.line-thin {
-  font-weight: 600;
-}
-.hero-title .line.line-orange {
-  font-weight: 700;
-}
-
-/* Parent drop-shadow stack: outer soft shadow + tight contact shadow */
-.hero-title .line {
-  filter:
-    drop-shadow(0 8px 16px rgba(0, 0, 0, 0.22))
-    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.18));
-}
-.hero-title .line.line-thin {
-  filter:
-    drop-shadow(0 6px 12px rgba(0, 0, 0, 0.18))
-    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.14));
-}
-.hero-title .line.line-orange {
-  filter:
-    drop-shadow(0 0 28px rgba(255, 105, 40, 0.55))
-    drop-shadow(0 8px 16px rgba(120, 30, 0, 0.5))
-    drop-shadow(0 2px 3px rgba(80, 20, 0, 0.6));
-}
-
-/* ----- Chrome balloons (BREATHING, INSTRUMENTS) ----- */
-.hero-title .line > span.char {
-  background: radial-gradient(
-    ellipse 70% 80% at 30% 25%,
-    #ffffff 0%,
-    #e8e5dc 14%,
-    #b6b2a8 30%,
-    #555551 56%,
-    #1c1c1a 82%,
-    #0a0a08 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  /* Rim-stroke fakes the rubber edge of an inflated balloon */
-  -webkit-text-stroke: 0.02em rgba(40, 40, 38, 0.55);
-  paint-order: stroke fill;
-  transform-origin: 50% 60%;
-}
-
-/* ----- Ink balloon (FROM) ----- */
-.hero-title .line.line-thin > span.char {
-  background: radial-gradient(
-    ellipse 70% 80% at 30% 25%,
-    #c8c5bd 0%,
-    #8a8782 30%,
-    #3a3a38 65%,
-    #0a0a08 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  -webkit-text-stroke: 0.018em rgba(20, 20, 18, 0.5);
-  paint-order: stroke fill;
-}
-
-/* ----- Plasma balloon (LIQUID) ----- */
-.hero-title .line.line-orange > span.char {
-  background: radial-gradient(
-    ellipse 70% 80% at 32% 22%,
-    #fff2dc 0%,
-    #ffcc8a 12%,
-    #ff8a3a 28%,
-    #ff4500 52%,
-    #b52d00 80%,
-    #5a1500 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  -webkit-text-stroke: 0.022em rgba(80, 18, 0, 0.55);
-  paint-order: stroke fill;
-}
-
-/* ============================================================
-   FOOTER MARQUEE — balloon chrome ribbon (mixed alternates)
-   ============================================================ */
-
-.foot-marquee {
-  filter:
-    drop-shadow(0 4px 8px rgba(0, 0, 0, 0.22))
-    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18));
-  perspective: 450px;
-  perspective-origin: 50% 50%;
-  transform-style: preserve-3d;
-}
-
-.marquee-track {
-  font-weight: 600;
-  transform-style: preserve-3d;
-}
-
-.marquee-track > span > span.char,
-.marquee-track > span.char {
-  background: radial-gradient(
-    ellipse 70% 80% at 30% 25%,
-    #ffffff 0%,
-    #e0ddd4 14%,
-    #a8a49c 34%,
-    #3c3c3a 68%,
-    #0c0c0a 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  -webkit-text-stroke: 0.02em rgba(30, 30, 28, 0.5);
-  paint-order: stroke fill;
-}
-
-.marquee-track > span:nth-child(2n) > span.char,
-.marquee-track > span.char:nth-child(2n) {
-  background: radial-gradient(
-    ellipse 70% 80% at 32% 22%,
-    #fff0d8 0%,
-    #ffc080 18%,
-    #ff6a2a 42%,
-    #ff4500 65%,
-    #8a1f00 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  -webkit-text-stroke: 0.022em rgba(80, 18, 0, 0.55);
-  paint-order: stroke fill;
 }
 
 /* ============================================================
@@ -597,131 +434,6 @@ button {
 }
 
 /* ============================================================
-   HERO
-   ============================================================ */
-
-.hero {
-  position: relative;
-  z-index: 10;
-  min-height: 100vh;
-  padding: 120px 28px 80px 28px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: auto 1fr auto;
-  gap: 40px;
-  pointer-events: none;
-}
-
-.hero > * {
-  pointer-events: auto;
-}
-
-.hero-marker {
-  grid-column: 1;
-  grid-row: 1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--grey-1);
-  font-size: 11px;
-}
-
-.hero-marker .dot {
-  width: 6px;
-  height: 6px;
-  background: var(--orange);
-  border-radius: 50%;
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-.hero-title {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  font-family: "Space Grotesk", sans-serif;
-  font-weight: 300;
-  font-size: clamp(56px, 13vw, 200px);
-  line-height: 0.88;
-  letter-spacing: -0.04em;
-  align-self: center;
-  mix-blend-mode: normal;
-  pointer-events: none;
-}
-
-.hero-title .line {
-  display: flex;
-  overflow: visible;
-  will-change: transform;
-}
-
-.hero-title .line.line-thin {
-  font-weight: 200;
-  font-size: 0.7em;
-  letter-spacing: -0.02em;
-  color: var(--grey-1);
-  margin-left: 0.2em;
-}
-
-.hero-title .line.line-orange {
-  color: var(--orange);
-  font-style: italic;
-  font-weight: 400;
-}
-
-.hero-title .line span {
-  display: inline-block;
-  transition: transform 0.6s cubic-bezier(0.2, 0.9, 0.2, 1);
-  will-change: transform;
-  animation: hero-letter 7s ease-in-out infinite;
-}
-
-.hero-title .line span:nth-child(even) {
-  animation-delay: -1.5s;
-  animation-duration: 8s;
-}
-
-@keyframes hero-letter {
-  0%, 100% { transform: translateY(0) scaleY(1); }
-  50% { transform: translateY(-4px) scaleY(1.02); }
-}
-
-.hero-sub {
-  grid-column: 2;
-  grid-row: 3;
-  max-width: 420px;
-  justify-self: end;
-  align-self: end;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--ink-soft);
-}
-
-.hero-sub-label {
-  color: var(--orange);
-  margin-bottom: 10px;
-  font-size: 10px;
-}
-
-.hero-scroll {
-  grid-column: 1;
-  grid-row: 3;
-  align-self: end;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--grey-1);
-}
-
-.hero-scroll .arrow {
-  display: inline-block;
-  animation: scroll-arrow 2.2s ease-in-out infinite;
-}
-
-@keyframes scroll-arrow {
-  0%, 100% { transform: translateY(0); opacity: 0.4; }
-  50% { transform: translateY(6px); opacity: 1; }
-}
-
-/* ============================================================
    SIDE READOUT
    ============================================================ */
 
@@ -767,25 +479,61 @@ button {
 }
 
 /* ============================================================
-   SECTION HEADINGS
+   SPATIAL STATIONS — fixed HUD panels that fade in per station
+   as the 3D camera dollies along the Z-axis corridor.
    ============================================================ */
 
-.section-heading {
+.station-deck {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.station-hud {
+  position: absolute;
+  top: 50%;
+  left: 28px;
+  right: 28px;
+  transform: translateY(-50%);
+  max-width: 520px;
   display: flex;
-  align-items: center;
-  gap: 20px;
-  margin-bottom: 40px;
-  padding: 0 28px;
+  flex-direction: column;
+  gap: 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.6s cubic-bezier(0.2, 0.9, 0.2, 1),
+    transform 0.8s cubic-bezier(0.2, 0.9, 0.2, 1),
+    filter 0.6s;
+  filter: blur(6px);
+  transform: translateY(-50%) translateZ(0) scale(0.96);
+  will-change: transform, opacity, filter;
 }
 
-.section-num {
-  color: var(--grey-1);
-  white-space: nowrap;
-  font-size: 11px;
+.station-hud.active {
+  opacity: 1;
+  pointer-events: auto;
+  filter: blur(0);
+  transform: translateY(-50%) translateZ(0) scale(1);
 }
 
-.section-rule {
-  flex: 1;
+/* Product stations shift to the right so the WebGL sculpture,
+   which is centered in the viewport, is visible on the left. */
+.station-hud[data-product] {
+  left: auto;
+  right: 28px;
+  max-width: 420px;
+  text-align: left;
+}
+
+.station-num {
+  color: var(--orange);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+}
+
+.station-rule {
   height: 1px;
   background: linear-gradient(
     90deg,
@@ -795,7 +543,7 @@ button {
   position: relative;
 }
 
-.section-rule::after {
+.station-rule::after {
   content: "";
   position: absolute;
   right: 0;
@@ -807,236 +555,286 @@ button {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
-/* ============================================================
-   PRODUCTS SECTION
-   ============================================================ */
-
-.products {
-  position: relative;
-  z-index: 5;
-  padding: 80px 0 120px 0;
-  min-height: 120vh;
-}
-
-.product-hud {
-  position: relative;
-  height: 100vh;
-  pointer-events: none;
-}
-
-.product-label {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: auto;
-  display: flex;
-  gap: 10px;
-  opacity: 0;
-  transition: opacity 0.6s;
-  will-change: transform;
-}
-
-.product-label.visible {
-  opacity: 1;
-}
-
-.plabel-line {
-  width: 60px;
-  height: 1px;
-  background: var(--ink);
-  align-self: flex-start;
-  margin-top: 8px;
-  transform-origin: left;
-  animation: plabel-line 3s ease-in-out infinite;
-}
-
-@keyframes plabel-line {
-  0%, 100% { transform: scaleX(1); }
-  50% { transform: scaleX(1.2); }
-}
-
-.plabel-body {
+.station-title {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  background: var(--glass);
-  backdrop-filter: blur(10px) saturate(1.2);
-  -webkit-backdrop-filter: blur(10px) saturate(1.2);
-  border: 1px solid var(--line-thin);
-  padding: 10px 14px;
-  min-width: 200px;
+  gap: 6px;
 }
 
-.plabel-num {
-  color: var(--orange);
-  font-size: 9px;
-}
-
-.plabel-name {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-}
-
-.plabel-price {
+.stitle-lead {
   color: var(--grey-1);
+  font-family: "Noto Sans JP", "JetBrains Mono", monospace;
+  font-weight: 300;
   font-size: 10px;
-  margin-bottom: 6px;
+  letter-spacing: 0.3em;
 }
 
-.plabel-open {
-  align-self: flex-start;
-  font-size: 10px;
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  transition: all 0.3s;
-}
-
-.plabel-open:hover {
-  background: var(--orange);
-  color: var(--bone);
-  border-color: var(--orange);
-}
-
-.product-spacer {
-  height: 80vh;
-}
-
-/* ============================================================
-   MANIFESTO
-   ============================================================ */
-
-.manifesto {
-  position: relative;
-  z-index: 10;
-  padding: 60px 0 80px 0;
-}
-
-.manifesto-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  padding: 0 28px;
-  background: var(--line-thin);
-  border: 1px solid var(--line-thin);
-}
-
-.manifesto-cell {
-  background: var(--bone);
-  padding: 30px 24px 40px 24px;
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  position: relative;
-  overflow: hidden;
-  transition: background 0.4s;
-}
-
-.manifesto-cell::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(
-    circle at var(--mx, 50%) var(--my, 50%),
-    rgba(255, 69, 0, 0.08),
-    transparent 40%
-  );
-  opacity: 0;
-  transition: opacity 0.3s;
-  pointer-events: none;
-}
-
-.manifesto-cell:hover::before {
-  opacity: 1;
-}
-
-.cell-num {
-  color: var(--orange);
-  font-size: 11px;
-}
-
-.cell-body {
-  font-size: 14px;
-  line-height: 1.5;
-  max-width: 280px;
-}
-
-/* ============================================================
-   FOOTER
-   ============================================================ */
-
-.foot {
-  position: relative;
-  z-index: 10;
-  border-top: 1px solid var(--line-thin);
-  padding-top: 40px;
-}
-
-.foot-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
-  padding: 0 28px 30px 28px;
-  gap: 20px;
-  align-items: start;
-}
-
-.foot-logo {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.18em;
-}
-
-.foot-addr,
-.foot-meta {
-  font-size: 10px;
-  line-height: 1.6;
-  color: var(--grey-1);
-}
-
-.foot-links {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 10px;
-}
-
-.foot-links a {
-  transition: color 0.3s;
-  cursor: none;
-}
-
-.foot-links a:hover {
-  color: var(--orange);
-}
-
-.foot-marquee {
-  overflow: hidden;
-  border-top: 1px solid var(--line-thin);
-  border-bottom: 1px solid var(--line-thin);
-  padding: 14px 0;
-}
-
-.marquee-track {
-  display: flex;
-  gap: 60px;
-  white-space: nowrap;
-  animation: marquee 40s linear infinite;
+.stitle-main {
   font-family: "Space Grotesk", sans-serif;
   font-weight: 300;
-  font-size: clamp(40px, 8vw, 120px);
-  letter-spacing: -0.03em;
+  font-size: clamp(32px, 4.8vw, 66px);
+  line-height: 0.98;
+  letter-spacing: -0.02em;
   color: var(--ink);
 }
 
-.marquee-track span:nth-child(2n) {
-  color: var(--orange);
+.stitle-main em {
   font-style: italic;
+  color: var(--orange);
+  font-weight: 400;
 }
 
-@keyframes marquee {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
+.station-body {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  max-width: 480px;
+}
+
+.station-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--grey-1);
+  font-size: 10px;
+  margin-top: 8px;
+}
+
+.station-foot .sep {
+  opacity: 0.5;
+}
+
+.station-specs {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px 20px;
+  font-size: 10px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line-thin);
+  border-bottom: 1px solid var(--line-thin);
+}
+
+.station-specs > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.station-specs > div > span:first-child {
+  color: var(--grey-1);
+}
+
+.station-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-top: 4px;
+}
+
+.station-price {
+  font-size: 13px;
+  color: var(--ink);
+  letter-spacing: 0.08em;
+}
+
+.station-open {
+  font-size: 10px;
+  padding: 10px 16px;
+  border: 1px solid var(--ink);
+  background: var(--bone);
+  color: var(--ink);
+  letter-spacing: 0.22em;
+  transition: all 0.3s cubic-bezier(0.2, 0.9, 0.2, 1);
+}
+
+.station-open:hover {
+  background: var(--orange);
+  color: var(--bone);
+  border-color: var(--orange);
+  transform: translateX(4px);
+}
+
+.station-process {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  font-size: 11px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line-thin);
+  border-bottom: 1px solid var(--line-thin);
+  max-width: 520px;
+}
+
+.station-process > div {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 14px;
+}
+
+.station-process > div > span:first-child {
+  color: var(--orange);
+}
+
+.station-contact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.station-contact a {
+  transition: color 0.3s;
+}
+
+.station-contact a:hover {
+  color: var(--orange);
+}
+
+.station-contact .sep {
+  color: var(--grey-1);
+}
+
+.station-addr {
+  font-size: 10px;
+  color: var(--grey-1);
+  letter-spacing: 0.18em;
+}
+
+/* ============================================================
+   SPATIAL NAVIGATION — forward/back arrows + progress dots
+   ============================================================ */
+
+.scene-nav {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 14px;
+  background: var(--glass);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  border: 1px solid var(--line-thin);
+  border-radius: 2px;
+}
+
+.scene-arrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--ink);
+  border: 1px solid transparent;
+  transition: all 0.25s cubic-bezier(0.2, 0.9, 0.2, 1);
+  cursor: none;
+}
+
+.scene-arrow:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
+.scene-arrow:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.scene-arrow .arr {
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.2, 1);
+}
+
+.scene-arrow-prev:hover .arr { transform: translateX(-3px); }
+.scene-arrow-next:hover .arr { transform: translateX(3px); }
+
+.scene-dots {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 0 6px;
+  border-left: 1px solid var(--line-thin);
+  border-right: 1px solid var(--line-thin);
+  height: 18px;
+}
+
+.sdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--ink);
+  background: transparent;
+  padding: 0;
+  cursor: none;
+  transition: all 0.3s cubic-bezier(0.2, 0.9, 0.2, 1);
+  position: relative;
+}
+
+.sdot.active {
+  background: var(--orange);
+  border-color: var(--orange);
+  box-shadow: 0 0 10px var(--orange);
+  transform: scale(1.2);
+}
+
+.sdot:hover:not(.active) {
+  background: var(--ink);
+}
+
+/* ============================================================
+   SCENE INDICATOR — station N / total + depth readout
+   ============================================================ */
+
+.scene-indicator {
+  position: fixed;
+  top: 90px;
+  right: 28px;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--line-thin);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--ink);
+}
+
+.sind-num {
+  color: var(--orange);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  min-width: 26px;
+  text-align: center;
+}
+
+.sind-sep {
+  color: var(--grey-1);
+}
+
+.sind-total {
+  color: var(--grey-1);
+  font-size: 11px;
+}
+
+.sind-z {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-thin);
+  color: var(--grey-1);
+  font-size: 9px;
 }
 
 /* ============================================================
@@ -1324,16 +1122,19 @@ button {
     grid-column: 2;
     grid-row: 1;
   }
-  .manifesto-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-  .foot-row {
-    grid-template-columns: 1fr 1fr;
-  }
   .modal-inner {
     grid-template-columns: 1fr;
   }
   .side-readout {
     display: none;
+  }
+  .station-hud[data-product] {
+    left: 28px;
+    right: 28px;
+    max-width: none;
+  }
+  .scene-indicator {
+    top: 80px;
+    right: 12px;
   }
 }

@@ -122,7 +122,7 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   100
 );
-camera.position.set(0, 0, 10);
+camera.position.set(0, 0, 12);
 
 // Lights
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -738,24 +738,47 @@ const products = productBuilders.map((fn, i) => {
   return obj;
 });
 
-// Layout: 4 products in view, not perfectly symmetric
-// Positions in world coords (camera at z=10, fov=35 means visible ~3.15 units at z=0)
+// Layout: 4 products arranged along the Z-axis as a corridor.
+// Each product sits 12 world units ahead of the previous one.
+// Slight x/y offsets give each station its own "personality" when
+// the camera dollies up to it. HUD panel lives on the right side
+// of the viewport, so products are biased left for balance.
 const layouts = [
-  { pos: [ 2.6,  1.3, -0.5], scale: 1.0 },   // ORB — upper right
-  { pos: [-2.8, -0.5, -1.2], scale: 1.2 },   // PILLAR — left (tall)
-  { pos: [ 1.7, -1.6,  0.6], scale: 0.95 },  // RING — lower right
-  { pos: [-0.9,  1.5,  0.3], scale: 1.0 },   // SPINE — upper left
+  { pos: [-1.5,  0.5,   0],  scale: 1.0 },   // ORB      — station 1 target
+  { pos: [-1.8, -0.3, -12],  scale: 1.2 },   // PILLAR   — station 2 target
+  { pos: [-1.3,  0.7, -24],  scale: 0.95 },  // RING     — station 3 target
+  { pos: [-2.0, -0.2, -36],  scale: 1.0 },   // SPINE    — station 4 target
 ];
 products.forEach((p, i) => {
   p.position.set(...layouts[i].pos);
   p.scale.multiplyScalar(layouts[i].scale);
-  // Random-ish orientation
+  // Random-ish orientation so products don't look aligned on a rail
   p.rotation.set(
     Math.random() * 0.5,
     Math.random() * Math.PI * 2,
     Math.random() * 0.3
   );
 });
+
+// -----------------------------------------------------------
+// SPATIAL STATIONS — the camera dollies along the Z corridor.
+// Station 0 is the intro (ahead of all products, showing the void).
+// Stations 1-4 each park the camera 6 world units in front of their
+// target product. Station 5 flies past all products into the void,
+// doubling as the atelier / contact panel.
+// -----------------------------------------------------------
+const STATIONS = [
+  { camZ:  12, lookZ:   4,  productIdx: null }, // 0 intro
+  { camZ:   6, lookZ:   0,  productIdx: 0    }, // 1 NEBULA SPHERE
+  { camZ:  -6, lookZ: -12,  productIdx: 1    }, // 2 RESONANT PILLAR
+  { camZ: -18, lookZ: -24,  productIdx: 2    }, // 3 ORBITAL FLUX
+  { camZ: -30, lookZ: -36,  productIdx: 3    }, // 4 VERTEBRAE SYNTH
+  { camZ: -42, lookZ: -48,  productIdx: null }, // 5 atelier / contact
+];
+
+let currentStation = 0;
+let smoothCamZ = STATIONS[0].camZ;
+let smoothLookZ = STATIONS[0].lookZ;
 
 // -----------------------------------------------------------
 // 3D HERO TITLE + 3D MARQUEE
@@ -1122,10 +1145,8 @@ window.addEventListener("mousemove", (e) => {
   state.mouse.ny = -(e.clientY / state.height) * 2 + 1;
 });
 
-window.addEventListener("scroll", () => {
-  state.scroll = window.scrollY;
-  bgUniforms.uScroll.value = state.scroll;
-});
+// (scroll listener removed — the page no longer scrolls; navigation is
+// station-based via wheel/keys/arrows. bgUniforms.uScroll stays at 0.)
 
 window.addEventListener("resize", () => {
   state.width = window.innerWidth;
@@ -1153,46 +1174,10 @@ sceneCanvas.addEventListener("click", (e) => {
   if (picked) openProductModal(picked.userData.data);
 });
 
-// -----------------------------------------------------------
-// HUD labels track 3D product positions
-// -----------------------------------------------------------
-const labelEls = Array.from(document.querySelectorAll(".product-label"));
-const tmpVec = new THREE.Vector3();
-function updateLabels() {
-  const productsSection = document.getElementById("instruments");
-  const rect = productsSection.getBoundingClientRect();
-  const sectionVisible = rect.top < state.height * 0.9 && rect.bottom > 0;
-
-  products.forEach((p, i) => {
-    const el = labelEls[i];
-    if (!el) return;
-    p.updateWorldMatrix(true, false);
-    tmpVec.setFromMatrixPosition(p.matrixWorld);
-    tmpVec.project(camera);
-    const x = (tmpVec.x * 0.5 + 0.5) * state.width;
-    const y = (-tmpVec.y * 0.5 + 0.5) * state.height;
-
-    // Offset so label doesn't overlap object
-    const offsetX = x > state.width * 0.5 ? 60 : -260;
-    const offsetY = -20;
-
-    el.style.transform = `translate(${x + offsetX}px, ${y + offsetY}px)`;
-
-    if (sectionVisible) el.classList.add("visible");
-    else el.classList.remove("visible");
-  });
-}
-
-labelEls.forEach((el, i) => {
-  const btn = el.querySelector(".plabel-open");
-  btn.addEventListener("click", () => openProductModal(PRODUCTS[i]));
-  el.addEventListener("mouseenter", () => {
-    products[i].userData.hovered = true;
-  });
-  el.addEventListener("mouseleave", () => {
-    products[i].userData.hovered = false;
-  });
-});
+// (projected HUD labels removed — station HUD panels now fade in
+// station-by-station, anchored to the viewport rather than following
+// 3D product screen positions. OPEN buttons are wired at the bottom
+// of this file via .station-open listeners.)
 
 // -----------------------------------------------------------
 // Modal (product detail)
@@ -1455,16 +1440,7 @@ function updateReadouts() {
   rSeed.textContent = (4291007 + Math.floor(Math.sin(t * 0.05) * 18000)).toLocaleString();
 }
 
-// -----------------------------------------------------------
-// Manifesto cells — mouse-tracking radial glow
-// -----------------------------------------------------------
-document.querySelectorAll(".manifesto-cell").forEach((cell) => {
-  cell.addEventListener("mousemove", (e) => {
-    const r = cell.getBoundingClientRect();
-    cell.style.setProperty("--mx", ((e.clientX - r.left) / r.width) * 100 + "%");
-    cell.style.setProperty("--my", ((e.clientY - r.top) / r.height) * 100 + "%");
-  });
-});
+// (manifesto cells removed — their content is folded into station 5.)
 
 // -----------------------------------------------------------
 // Cursor state based on what's under it
@@ -1522,12 +1498,29 @@ function animate() {
     1 - state.mouse.y / state.height
   );
 
-  // Parallax camera
-  const tiltX = state.mouse.nx * 0.25;
-  const tiltY = state.mouse.ny * 0.2;
-  camera.position.x += (tiltX - camera.position.x) * 0.05;
-  camera.position.y += (tiltY - camera.position.y) * 0.05;
-  camera.lookAt(0, 0, 0);
+  // Spatial dolly: smoothly drive camera Z toward current station's
+  // parked position, and the look-target toward its point of interest.
+  const target = STATIONS[currentStation];
+  const dollyEase = 0.055;
+  smoothCamZ += (target.camZ - smoothCamZ) * dollyEase;
+  smoothLookZ += (target.lookZ - smoothLookZ) * dollyEase;
+
+  // Mild mouse parallax on X/Y so the scene feels alive while parked
+  const tiltX = state.mouse.nx * 0.4;
+  const tiltY = state.mouse.ny * 0.3;
+  camera.position.x += (tiltX - camera.position.x) * 0.06;
+  camera.position.y += (tiltY - camera.position.y) * 0.06;
+  camera.position.z = smoothCamZ;
+  // Look at the current product's (x,y) or centered for void stations,
+  // at the station's look-Z. This lets asymmetric product offsets
+  // create a natural camera pan as we approach each station.
+  let lookX = 0, lookY = 0;
+  if (target.productIdx != null) {
+    const lp = layouts[target.productIdx].pos;
+    lookX = lp[0] * 0.6; // ease toward product's offset, not all the way
+    lookY = lp[1] * 0.6;
+  }
+  camera.lookAt(lookX, lookY, smoothLookZ);
 
   // Animate each product
   products.forEach((p, i) => {
@@ -1563,9 +1556,6 @@ function animate() {
 
   // Cursor / crosshair
   updateCursor();
-
-  // Labels
-  updateLabels();
 
   // Readouts
   if (frame % 4 === 0) updateReadouts();
@@ -1998,6 +1988,161 @@ if (document.readyState === "loading") {
 
 drawGrain();
 animate();
+
+// -----------------------------------------------------------
+// STATION NAVIGATION — forward/back through the Z-corridor.
+// Inputs: wheel, arrow keys, space, PageUp/PageDown, HUD buttons,
+// progress dots, top-bar nav links. All funnel into goToStation().
+// -----------------------------------------------------------
+const stationHudEls = Array.from(document.querySelectorAll(".station-hud"));
+const stationDotEls = Array.from(document.querySelectorAll(".sdot"));
+const sindNumEl = document.getElementById("sind-num");
+const sindZEl = document.getElementById("sind-z");
+const navPrevEl = document.getElementById("nav-prev");
+const navNextEl = document.getElementById("nav-next");
+
+function updateStationUi() {
+  for (const el of stationHudEls) {
+    const sn = parseInt(el.dataset.station, 10);
+    el.classList.toggle("active", sn === currentStation);
+  }
+  for (const el of stationDotEls) {
+    const sn = parseInt(el.dataset.station, 10);
+    el.classList.toggle("active", sn === currentStation);
+  }
+  if (sindNumEl) {
+    sindNumEl.textContent = String(currentStation).padStart(2, "0");
+  }
+  if (sindZEl) {
+    const z = STATIONS[currentStation].camZ;
+    sindZEl.textContent = "Z " + (z >= 0 ? "+" : "") + z.toFixed(1);
+  }
+  if (navPrevEl) navPrevEl.disabled = currentStation === 0;
+  if (navNextEl) navNextEl.disabled = currentStation === STATIONS.length - 1;
+}
+
+function goToStation(n) {
+  const clamped = Math.max(0, Math.min(STATIONS.length - 1, n | 0));
+  if (clamped === currentStation) return;
+  currentStation = clamped;
+  updateStationUi();
+}
+
+// Paint the initial state
+updateStationUi();
+
+function isModalOpen() {
+  return modalEl && modalEl.classList.contains("open");
+}
+
+// --- Wheel / trackpad: one station per gesture, locked for 650ms ---
+let wheelBusy = false;
+window.addEventListener(
+  "wheel",
+  (e) => {
+    // Always prevent native scroll — the page is non-scrollable
+    e.preventDefault();
+    if (isModalOpen()) return;
+    if (wheelBusy) return;
+    if (Math.abs(e.deltaY) < 6) return;
+    wheelBusy = true;
+    setTimeout(() => {
+      wheelBusy = false;
+    }, 650);
+    goToStation(currentStation + (e.deltaY > 0 ? 1 : -1));
+  },
+  { passive: false }
+);
+
+// --- Keyboard: arrows, space, PageUp/Down ---
+window.addEventListener("keydown", (e) => {
+  // Don't intercept typing inside the modal (future-proof)
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  // Let Escape reach the modal close handler; don't navigate when open
+  if (isModalOpen()) return;
+  if (
+    e.key === "ArrowRight" ||
+    e.key === "ArrowDown" ||
+    e.key === "PageDown" ||
+    e.key === " "
+  ) {
+    e.preventDefault();
+    goToStation(currentStation + 1);
+  } else if (
+    e.key === "ArrowLeft" ||
+    e.key === "ArrowUp" ||
+    e.key === "PageUp"
+  ) {
+    e.preventDefault();
+    goToStation(currentStation - 1);
+  } else if (e.key === "Home") {
+    e.preventDefault();
+    goToStation(0);
+  } else if (e.key === "End") {
+    e.preventDefault();
+    goToStation(STATIONS.length - 1);
+  }
+});
+
+// --- Prev/Next buttons ---
+if (navPrevEl) {
+  navPrevEl.addEventListener("click", () => goToStation(currentStation - 1));
+}
+if (navNextEl) {
+  navNextEl.addEventListener("click", () => goToStation(currentStation + 1));
+}
+
+// --- Progress dots ---
+for (const el of stationDotEls) {
+  el.addEventListener("click", () => {
+    const n = parseInt(el.dataset.station, 10);
+    if (!Number.isNaN(n)) goToStation(n);
+  });
+}
+
+// --- Top-bar nav links ---
+document.querySelectorAll(".top-bar .nav a[data-station]").forEach((el) => {
+  el.addEventListener("click", (e) => {
+    e.preventDefault();
+    const s = parseInt(el.dataset.station, 10);
+    if (!Number.isNaN(s)) goToStation(s);
+  });
+});
+
+// --- Station OPEN buttons → product modal ---
+document.querySelectorAll(".station-open").forEach((el) => {
+  el.addEventListener("click", () => {
+    const pi = parseInt(el.dataset.product, 10);
+    if (!Number.isNaN(pi) && PRODUCTS[pi]) openProductModal(PRODUCTS[pi]);
+  });
+});
+
+// --- Touch swipe (basic vertical swipe → station change) ---
+let touchStartY = null;
+window.addEventListener(
+  "touchstart",
+  (e) => {
+    if (isModalOpen()) return;
+    if (e.touches.length === 1) touchStartY = e.touches[0].clientY;
+  },
+  { passive: true }
+);
+window.addEventListener(
+  "touchend",
+  (e) => {
+    if (touchStartY == null) return;
+    const endY =
+      (e.changedTouches && e.changedTouches[0] && e.changedTouches[0].clientY) ||
+      touchStartY;
+    const dy = touchStartY - endY;
+    touchStartY = null;
+    if (Math.abs(dy) < 40) return;
+    if (isModalOpen()) return;
+    goToStation(currentStation + (dy > 0 ? 1 : -1));
+  },
+  { passive: true }
+);
 
 // -----------------------------------------------------------
 // Hover-reset when mouse leaves window

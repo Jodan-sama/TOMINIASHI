@@ -1692,7 +1692,13 @@ function indexChar(el) {
   const balloon = !!(
     el.closest && (el.closest(".hero-title") || el.closest(".foot-marquee"))
   );
-  return {
+  // Each balloon letter gets a permanent base pose — different resting
+  // depth + tilt per char — so the row always reads as a 3D scene of
+  // floating objects, never a flat line of text.
+  const baseTz = balloon ? (Math.random() - 0.5) * 40 : 0;
+  const baseRotY = balloon ? (Math.random() - 0.5) * 18 : 0;
+  const baseRotX = balloon ? (Math.random() - 0.5) * 12 : 0;
+  const c = {
     el,
     cx: 0,
     cy: 0,
@@ -1703,7 +1709,18 @@ function indexChar(el) {
     lastS: 0,
     modalChar: false,
     balloon,
+    baseTz,
+    baseRotY,
+    baseRotX,
   };
+  // Paint the baseline pose immediately so even before the first
+  // animation frame touches this char, it's already posed in 3D.
+  if (balloon) {
+    el.style.transform =
+      `translate3d(0,0,${baseTz.toFixed(1)}px) ` +
+      `rotateX(${baseRotX.toFixed(1)}deg) rotateY(${baseRotY.toFixed(1)}deg)`;
+  }
+  return c;
 }
 
 function clearCharStyles(entries) {
@@ -1831,10 +1848,10 @@ function updateWiggles(t) {
         const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
         const style = c.el.style;
         if (c.balloon) {
-          // 3D resting state: gentle bob in Z + subtle tilt
-          const tz = Math.sin(t * 0.9 + c.seed) * 12;
-          const rotY = Math.sin(t * 1.1 + c.seed * 0.7) * 4;
-          const rotX = Math.cos(t * 0.85 + c.seed * 0.5) * 3;
+          // 3D resting: base pose + gentle bob in Z + subtle tilt
+          const tz = c.baseTz + Math.sin(t * 0.9 + c.seed) * 22;
+          const rotY = c.baseRotY + Math.sin(t * 1.1 + c.seed * 0.7) * 7;
+          const rotX = c.baseRotX + Math.cos(t * 0.85 + c.seed * 0.5) * 5;
           style.transform =
             `translate3d(0,0,${tz.toFixed(1)}px) ` +
             `rotateX(${rotX.toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) ` +
@@ -1850,9 +1867,9 @@ function updateWiggles(t) {
         // Balloons animate every frame, others lazy-stagger
         const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
         if (c.balloon) {
-          const tz = Math.sin(t * 0.9 + c.seed) * 12;
-          const rotY = Math.sin(t * 1.1 + c.seed * 0.7) * 4;
-          const rotX = Math.cos(t * 0.85 + c.seed * 0.5) * 3;
+          const tz = c.baseTz + Math.sin(t * 0.9 + c.seed) * 22;
+          const rotY = c.baseRotY + Math.sin(t * 1.1 + c.seed * 0.7) * 7;
+          const rotX = c.baseRotX + Math.cos(t * 0.85 + c.seed * 0.5) * 5;
           c.el.style.transform =
             `translate3d(0,0,${tz.toFixed(1)}px) ` +
             `rotateX(${rotX.toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) ` +
@@ -1907,11 +1924,11 @@ function updateWiggles(t) {
     const style = c.el.style;
     if (c.balloon) {
       // Balloon chars live in a 3D scene — push toward/away from camera
-      // (translateZ), tilt toward the cursor (rotateX/Y). This is the
-      // "real 3D" feel you see on pages that use CSS perspective.
-      const tz = ss * 60 + amb * 300; // pop forward on proximity
-      const rotY = dirX * ss * 30 + Math.sin(t * 1.3 + c.seed) * 6;
-      const rotX = -dirY * ss * 30 + Math.cos(t * 1.1 + c.seed) * 4;
+      // (translateZ), tilt toward the cursor (rotateX/Y). Base pose
+      // (per-letter permanent depth + tilt) blends with proximity drive.
+      const tz = c.baseTz + ss * 90 + amb * 300; // pop forward on proximity
+      const rotY = c.baseRotY + dirX * ss * 40 + Math.sin(t * 1.3 + c.seed) * 8;
+      const rotX = c.baseRotX + -dirY * ss * 40 + Math.cos(t * 1.1 + c.seed) * 6;
       style.transform =
         "translate3d(" +
         tx.toFixed(1) +

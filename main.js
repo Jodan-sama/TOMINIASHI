@@ -1825,14 +1825,23 @@ function updateWiggles(t) {
       // Out of effect range — just ambient breath, and only write
       // when we were previously wiggling OR on a lazy stagger schedule.
       // Balloon chars (hero + marquee) breathe much harder — they're
-      // inflated letters that visibly pulse.
+      // inflated letters that visibly pulse + bob in 3D space.
       const ambAmp = c.balloon ? 0.045 : 0.015;
-      // Balloons get their own stagger cadence too so they update every
-      // frame (idle breathing must be continuous, not stuttered).
       if (c.lastS > 0.005) {
         const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
         const style = c.el.style;
-        style.transform = `scale(${(1 + amb).toFixed(4)})`;
+        if (c.balloon) {
+          // 3D resting state: gentle bob in Z + subtle tilt
+          const tz = Math.sin(t * 0.9 + c.seed) * 12;
+          const rotY = Math.sin(t * 1.1 + c.seed * 0.7) * 4;
+          const rotX = Math.cos(t * 0.85 + c.seed * 0.5) * 3;
+          style.transform =
+            `translate3d(0,0,${tz.toFixed(1)}px) ` +
+            `rotateX(${rotX.toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) ` +
+            `scale(${(1 + amb).toFixed(4)})`;
+        } else {
+          style.transform = `scale(${(1 + amb).toFixed(4)})`;
+        }
         style.filter = "";
         style.opacity = "";
         style.textShadow = "";
@@ -1840,7 +1849,17 @@ function updateWiggles(t) {
       } else if (c.balloon || i % 90 === (frame || 0) % 90) {
         // Balloons animate every frame, others lazy-stagger
         const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
-        c.el.style.transform = `scale(${(1 + amb).toFixed(4)})`;
+        if (c.balloon) {
+          const tz = Math.sin(t * 0.9 + c.seed) * 12;
+          const rotY = Math.sin(t * 1.1 + c.seed * 0.7) * 4;
+          const rotX = Math.cos(t * 0.85 + c.seed * 0.5) * 3;
+          c.el.style.transform =
+            `translate3d(0,0,${tz.toFixed(1)}px) ` +
+            `rotateX(${rotX.toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) ` +
+            `scale(${(1 + amb).toFixed(4)})`;
+        } else {
+          c.el.style.transform = `scale(${(1 + amb).toFixed(4)})`;
+        }
       }
       continue;
     }
@@ -1886,16 +1905,41 @@ function updateWiggles(t) {
     const ty = dirY * push + wigY;
 
     const style = c.el.style;
-    style.transform =
-      "translate(" +
-      tx.toFixed(1) +
-      "px," +
-      ty.toFixed(1) +
-      "px) scale(" +
-      scale.toFixed(3) +
-      ") rotate(" +
-      rot.toFixed(1) +
-      "deg)";
+    if (c.balloon) {
+      // Balloon chars live in a 3D scene — push toward/away from camera
+      // (translateZ), tilt toward the cursor (rotateX/Y). This is the
+      // "real 3D" feel you see on pages that use CSS perspective.
+      const tz = ss * 60 + amb * 300; // pop forward on proximity
+      const rotY = dirX * ss * 30 + Math.sin(t * 1.3 + c.seed) * 6;
+      const rotX = -dirY * ss * 30 + Math.cos(t * 1.1 + c.seed) * 4;
+      style.transform =
+        "translate3d(" +
+        tx.toFixed(1) +
+        "px," +
+        ty.toFixed(1) +
+        "px," +
+        tz.toFixed(1) +
+        "px) rotateX(" +
+        rotX.toFixed(1) +
+        "deg) rotateY(" +
+        rotY.toFixed(1) +
+        "deg) rotateZ(" +
+        rot.toFixed(1) +
+        "deg) scale(" +
+        scale.toFixed(3) +
+        ")";
+    } else {
+      style.transform =
+        "translate(" +
+        tx.toFixed(1) +
+        "px," +
+        ty.toFixed(1) +
+        "px) scale(" +
+        scale.toFixed(3) +
+        ") rotate(" +
+        rot.toFixed(1) +
+        "deg)";
+    }
     style.filter = blur > 0.15 ? "blur(" + blur.toFixed(2) + "px)" : "";
     style.opacity = opacity.toFixed(3);
     style.textShadow =

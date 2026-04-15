@@ -955,35 +955,14 @@ function layoutMarquee3D() {
   text3D.marquee.position.z = 0.0;
 }
 
-// ---- Font loading → kicks off text build + hides HTML equivalents ----
-const fontLoader = new FontLoader();
-fontLoader.load(
-  "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_regular.typeface.json",
-  (font) => {
-    text3D.font = font;
-    buildHero3D();
-    buildMarquee3D();
-    text3D.ready = true;
-    document.body.classList.add("text3d-ready");
-    // Stop wiggling the HTML hero + marquee — they're now invisible
-    wiggleState.chars = wiggleState.chars.filter((c) => {
-      const p = c.el;
-      if (p.closest && (p.closest(".hero-title") || p.closest(".foot-marquee"))) {
-        // Clear any residual inline styles
-        p.style.transform = "";
-        p.style.filter = "";
-        p.style.opacity = "";
-        p.style.textShadow = "";
-        return false;
-      }
-      return true;
-    });
-  },
-  undefined,
-  (err) => {
-    console.warn("TOMI NIASHI: 3D font failed to load, keeping HTML text", err);
-  }
-);
+// ---- 3D WebGL text is DISABLED. Perspective foreshortening on extruded
+// letters kept letting their geometry fill the viewport at certain cursor
+// positions, obscuring everything else. We render the hero title + marquee
+// as HTML with CSS chrome / balloon styling instead (see style.css).
+// The builder / layout / updater functions above are kept but dormant.
+// -----------------------------------------------------------
+// (Intentionally no fontLoader.load() call — text3D.ready stays false,
+// updateText3D() early-returns, buildHero3D()/buildMarquee3D() never fire.)
 
 // ---- Per-frame update: per-char proximity inflate + marquee scroll ----
 const _tmpNdc = new THREE.Vector3();

@@ -83,24 +83,107 @@ button {
 }
 
 /* ============================================================
-   3D TEXT TAKEOVER
-   Once the typeface loads and the 3D hero + marquee render on
-   the scene canvas, fade out their HTML equivalents so we don't
-   see two stacked versions. We keep layout space via visibility
-   (not display:none) so the hero grid + footer height stay stable.
+   HERO TITLE — BALLOON CHROME
+   Chrome-gradient fill via background-clip: text, plus layered
+   text-shadow for faux 3D depth. Per-letter cursor proximity
+   scaling is driven by the wiggle system (see main.js).
+
+   IMPORTANT: the wiggle hot loop writes inline `filter: blur(...)`
+   on each .char span. If we put drop-shadow on the span, that gets
+   clobbered. So drop-shadows live on the parent .line element.
    ============================================================ */
 
-body.text3d-ready .hero-title {
-  visibility: hidden;
-  pointer-events: none;
+.hero-title .line {
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.18));
+}
+.hero-title .line.line-thin {
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.12));
+}
+.hero-title .line.line-orange {
+  filter:
+    drop-shadow(0 0 14px rgba(255, 69, 0, 0.35))
+    drop-shadow(0 2px 6px rgba(201, 53, 0, 0.4));
 }
 
-body.text3d-ready .foot-marquee {
-  /* Keep the border rails as geometric punctuation, hide the text */
-  pointer-events: none;
+.hero-title .line > span.char {
+  /* Chrome gradient for BREATHING / INSTRUMENTS */
+  background: linear-gradient(
+    180deg,
+    #f8f6f0 0%,
+    #bdbab2 32%,
+    #2a2a28 54%,
+    #5a5854 76%,
+    #cfccc4 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  transform-origin: 50% 60%;
 }
-body.text3d-ready .foot-marquee .marquee-track {
-  visibility: hidden;
+
+.hero-title .line.line-thin > span.char {
+  background: linear-gradient(
+    180deg,
+    #a8a6a0 0%,
+    #5a5855 50%,
+    #1a1a18 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.hero-title .line.line-orange > span.char {
+  background: linear-gradient(
+    180deg,
+    #ffb080 0%,
+    #ff6a2a 30%,
+    #c93500 60%,
+    #ff4500 85%,
+    #ffa070 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* ============================================================
+   FOOTER MARQUEE — balloon chrome ribbon
+   ============================================================ */
+
+.foot-marquee {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.18));
+}
+
+.marquee-track > span > span.char,
+.marquee-track > span.char {
+  background: linear-gradient(
+    180deg,
+    #d8d5cc 0%,
+    #2a2a28 50%,
+    #908d86 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.marquee-track > span:nth-child(2n) > span.char,
+.marquee-track > span.char:nth-child(2n) {
+  background: linear-gradient(
+    180deg,
+    #ffb080 0%,
+    #ff4500 50%,
+    #c93500 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 /* ============================================================

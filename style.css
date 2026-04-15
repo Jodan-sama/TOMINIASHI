@@ -83,107 +83,155 @@ button {
 }
 
 /* ============================================================
-   HERO TITLE — BALLOON CHROME
-   Chrome-gradient fill via background-clip: text, plus layered
-   text-shadow for faux 3D depth. Per-letter cursor proximity
-   scaling is driven by the wiggle system (see main.js).
+   HERO TITLE + MARQUEE — INFLATED BALLOON LETTERS
+   Each letter is a balloon in the shape of a glyph:
+   - Radial gradient fill → spherical highlight + shaded edges
+   - Paint-order: stroke fill → inflated rim under the fill
+   - Layered drop-shadows on parent .line → float + gloss halo
+   - Stronger font-weight so the shape reads as chubby, not thin
+   The wiggle system handles per-letter shrink/grow on proximity
+   and a gentle ambient breathe at rest.
 
-   IMPORTANT: the wiggle hot loop writes inline `filter: blur(...)`
-   on each .char span. If we put drop-shadow on the span, that gets
-   clobbered. So drop-shadows live on the parent .line element.
+   IMPORTANT: wiggle writes inline `filter: blur(...)` onto each
+   .char span during proximity. If drop-shadow lives on the span
+   it gets clobbered — so drop-shadow sits on the parent line.
    ============================================================ */
 
-.hero-title .line {
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.18));
+/* Fatter base weight → the shape already reads as inflated */
+.hero-title {
+  font-weight: 700;
+  letter-spacing: -0.05em;
 }
 .hero-title .line.line-thin {
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.12));
+  font-weight: 600;
+}
+.hero-title .line.line-orange {
+  font-weight: 700;
+}
+
+/* Parent drop-shadow stack: outer soft shadow + tight contact shadow */
+.hero-title .line {
+  filter:
+    drop-shadow(0 8px 16px rgba(0, 0, 0, 0.22))
+    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.18));
+}
+.hero-title .line.line-thin {
+  filter:
+    drop-shadow(0 6px 12px rgba(0, 0, 0, 0.18))
+    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.14));
 }
 .hero-title .line.line-orange {
   filter:
-    drop-shadow(0 0 14px rgba(255, 69, 0, 0.35))
-    drop-shadow(0 2px 6px rgba(201, 53, 0, 0.4));
+    drop-shadow(0 0 28px rgba(255, 105, 40, 0.55))
+    drop-shadow(0 8px 16px rgba(120, 30, 0, 0.5))
+    drop-shadow(0 2px 3px rgba(80, 20, 0, 0.6));
 }
 
+/* ----- Chrome balloons (BREATHING, INSTRUMENTS) ----- */
 .hero-title .line > span.char {
-  /* Chrome gradient for BREATHING / INSTRUMENTS */
-  background: linear-gradient(
-    180deg,
-    #f8f6f0 0%,
-    #bdbab2 32%,
-    #2a2a28 54%,
-    #5a5854 76%,
-    #cfccc4 100%
+  background: radial-gradient(
+    ellipse 70% 80% at 30% 25%,
+    #ffffff 0%,
+    #e8e5dc 14%,
+    #b6b2a8 30%,
+    #555551 56%,
+    #1c1c1a 82%,
+    #0a0a08 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+  /* Rim-stroke fakes the rubber edge of an inflated balloon */
+  -webkit-text-stroke: 0.02em rgba(40, 40, 38, 0.55);
+  paint-order: stroke fill;
   transform-origin: 50% 60%;
 }
 
+/* ----- Ink balloon (FROM) ----- */
 .hero-title .line.line-thin > span.char {
-  background: linear-gradient(
-    180deg,
-    #a8a6a0 0%,
-    #5a5855 50%,
-    #1a1a18 100%
+  background: radial-gradient(
+    ellipse 70% 80% at 30% 25%,
+    #c8c5bd 0%,
+    #8a8782 30%,
+    #3a3a38 65%,
+    #0a0a08 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+  -webkit-text-stroke: 0.018em rgba(20, 20, 18, 0.5);
+  paint-order: stroke fill;
 }
 
+/* ----- Plasma balloon (LIQUID) ----- */
 .hero-title .line.line-orange > span.char {
-  background: linear-gradient(
-    180deg,
-    #ffb080 0%,
-    #ff6a2a 30%,
-    #c93500 60%,
-    #ff4500 85%,
-    #ffa070 100%
+  background: radial-gradient(
+    ellipse 70% 80% at 32% 22%,
+    #fff2dc 0%,
+    #ffcc8a 12%,
+    #ff8a3a 28%,
+    #ff4500 52%,
+    #b52d00 80%,
+    #5a1500 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+  -webkit-text-stroke: 0.022em rgba(80, 18, 0, 0.55);
+  paint-order: stroke fill;
 }
 
 /* ============================================================
-   FOOTER MARQUEE — balloon chrome ribbon
+   FOOTER MARQUEE — balloon chrome ribbon (mixed alternates)
    ============================================================ */
 
 .foot-marquee {
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.18));
+  filter:
+    drop-shadow(0 4px 8px rgba(0, 0, 0, 0.22))
+    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18));
+}
+
+.marquee-track {
+  font-weight: 600;
 }
 
 .marquee-track > span > span.char,
 .marquee-track > span.char {
-  background: linear-gradient(
-    180deg,
-    #d8d5cc 0%,
-    #2a2a28 50%,
-    #908d86 100%
+  background: radial-gradient(
+    ellipse 70% 80% at 30% 25%,
+    #ffffff 0%,
+    #e0ddd4 14%,
+    #a8a49c 34%,
+    #3c3c3a 68%,
+    #0c0c0a 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+  -webkit-text-stroke: 0.02em rgba(30, 30, 28, 0.5);
+  paint-order: stroke fill;
 }
 
 .marquee-track > span:nth-child(2n) > span.char,
 .marquee-track > span.char:nth-child(2n) {
-  background: linear-gradient(
-    180deg,
-    #ffb080 0%,
-    #ff4500 50%,
-    #c93500 100%
+  background: radial-gradient(
+    ellipse 70% 80% at 32% 22%,
+    #fff0d8 0%,
+    #ffc080 18%,
+    #ff6a2a 42%,
+    #ff4500 65%,
+    #8a1f00 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+  -webkit-text-stroke: 0.022em rgba(80, 18, 0, 0.55);
+  paint-order: stroke fill;
 }
 
 /* ============================================================

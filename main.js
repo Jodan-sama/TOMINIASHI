@@ -1686,6 +1686,12 @@ function splitInside(root) {
 }
 
 function indexChar(el) {
+  // Balloon chars (hero title + footer marquee) get a stronger ambient
+  // breathe at rest so they visibly inflate / deflate even when the cursor
+  // is far away.
+  const balloon = !!(
+    el.closest && (el.closest(".hero-title") || el.closest(".foot-marquee"))
+  );
   return {
     el,
     cx: 0,
@@ -1696,6 +1702,7 @@ function indexChar(el) {
     reread: hasMovingAncestor(el),
     lastS: 0,
     modalChar: false,
+    balloon,
   };
 }
 
@@ -1817,17 +1824,22 @@ function updateWiggles(t) {
     if (d2 > R2) {
       // Out of effect range — just ambient breath, and only write
       // when we were previously wiggling OR on a lazy stagger schedule.
+      // Balloon chars (hero + marquee) breathe much harder — they're
+      // inflated letters that visibly pulse.
+      const ambAmp = c.balloon ? 0.045 : 0.015;
+      // Balloons get their own stagger cadence too so they update every
+      // frame (idle breathing must be continuous, not stuttered).
       if (c.lastS > 0.005) {
-        const amb = Math.sin(t * ambFreq + c.seed) * 0.015;
+        const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
         const style = c.el.style;
         style.transform = `scale(${(1 + amb).toFixed(4)})`;
         style.filter = "";
         style.opacity = "";
         style.textShadow = "";
         c.lastS = 0;
-      } else if (i % 90 === (frame || 0) % 90) {
-        // very occasional ambient update to keep things lively
-        const amb = Math.sin(t * ambFreq + c.seed) * 0.015;
+      } else if (c.balloon || i % 90 === (frame || 0) % 90) {
+        // Balloons animate every frame, others lazy-stagger
+        const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
         c.el.style.transform = `scale(${(1 + amb).toFixed(4)})`;
       }
       continue;

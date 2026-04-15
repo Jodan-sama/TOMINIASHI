@@ -83,6 +83,27 @@ button {
 }
 
 /* ============================================================
+   3D TEXT TAKEOVER
+   Once the typeface loads and the 3D hero + marquee render on
+   the scene canvas, fade out their HTML equivalents so we don't
+   see two stacked versions. We keep layout space via visibility
+   (not display:none) so the hero grid + footer height stay stable.
+   ============================================================ */
+
+body.text3d-ready .hero-title {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body.text3d-ready .foot-marquee {
+  /* Keep the border rails as geometric punctuation, hide the text */
+  pointer-events: none;
+}
+body.text3d-ready .foot-marquee .marquee-track {
+  visibility: hidden;
+}
+
+/* ============================================================
    CANVAS LAYERS
    ============================================================ */
 

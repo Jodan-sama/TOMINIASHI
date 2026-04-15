@@ -4,6 +4,9 @@
 // ============================================================
 
 import * as THREE from "three";
+import { FontLoader } from "three/addons/loaders/FontLoader.js";
+import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 // -----------------------------------------------------------
 // State
@@ -135,6 +138,54 @@ rimLight.position.set(0, -5, -2);
 scene.add(rimLight);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+// -----------------------------------------------------------
+// Environment map (for reflective 3D text materials).
+// PMREM-filtered RoomEnvironment gives soft, studio-like reflections.
+// We only apply it to the explicit text materials — product shaders
+// are custom GLSL and ignore scene.environment.
+// -----------------------------------------------------------
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+pmremGenerator.compileEquirectangularShader();
+const envTexture = pmremGenerator.fromScene(
+  new RoomEnvironment(),
+  0.04
+).texture;
+pmremGenerator.dispose();
+
+// Chrome / polished-metal for BREATHING + INSTRUMENTS
+const chromeMat = new THREE.MeshPhysicalMaterial({
+  color: 0xf2eee6,
+  metalness: 1.0,
+  roughness: 0.12,
+  envMap: envTexture,
+  envMapIntensity: 1.7,
+  clearcoat: 0.7,
+  clearcoatRoughness: 0.08,
+});
+
+// Softer ink for FROM (secondary line)
+const inkTextMat = new THREE.MeshPhysicalMaterial({
+  color: 0x4a4a48,
+  metalness: 0.9,
+  roughness: 0.28,
+  envMap: envTexture,
+  envMapIntensity: 1.1,
+  clearcoat: 0.4,
+});
+
+// Bright orange plasma for LIQUID (+ every other marquee pass)
+const orangeTextMat = new THREE.MeshPhysicalMaterial({
+  color: 0xff4500,
+  metalness: 0.3,
+  roughness: 0.18,
+  envMap: envTexture,
+  envMapIntensity: 1.6,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.06,
+  emissive: 0xff2200,
+  emissiveIntensity: 0.25,
+});
 
 // -----------------------------------------------------------
 // Background shader (separate canvas, orthographic, fullscreen quad)
@@ -707,6 +758,328 @@ products.forEach((p, i) => {
 });
 
 // -----------------------------------------------------------
+// 3D HERO TITLE + 3D MARQUEE
+// Real extruded geometry with reflective PBR material.
+// Per-character meshes so each letter inflates / rotates / wobbles
+// independently with cursor proximity.
+// -----------------------------------------------------------
+const text3D = {
+  font: null,
+  hero: null, // THREE.Group
+  heroChars: [], // [{ mesh, seed, rotSeed, lineIndex }]
+  heroLines: [], // per-line group for resize layout
+  heroBaseY: 2.0, // world-Y of hero center at scroll=0
+  marquee: null, // THREE.Group
+  marqueeChars: [],
+  marqueeLoopWidth: 0, // width of one phrase copy
+  marqueeBaseY: -2.85, // pinned bottom of viewport
+  ready: false,
+};
+
+// Some geometry helpers
+const _v3 = new THREE.Vector3();
+const _box = new THREE.Box3();
+
+function buildCharMesh(ch, material, size, italic = 0) {
+  // Chubby, balloon-bubble letter: shallow depth + soft, generous bevel.
+  const geom = new TextGeometry(ch, {
+    font: text3D.font,
+    size,
+    depth: size * 0.08,
+    curveSegments: 8,
+    bevelEnabled: true,
+    bevelThickness: size * 0.035,
+    bevelSize: size * 0.028,
+    bevelOffset: 0,
+    bevelSegments: 5,
+  });
+  geom.computeBoundingBox();
+  const bb = geom.boundingBox;
+  const width = (bb.max.x - bb.min.x) || size * 0.3;
+  // Center the geometry horizontally at origin of mesh (keep baseline at y=0)
+  const offsetX = -(bb.max.x + bb.min.x) / 2;
+  const offsetY = -(bb.max.y + bb.min.y) / 2;
+  geom.translate(offsetX, offsetY, 0);
+  const mesh = new THREE.Mesh(geom, material);
+  if (italic) mesh.rotation.z = -italic;
+  mesh.userData.width = width;
+  return mesh;
+}
+
+function buildHero3D() {
+  const group = new THREE.Group();
+  text3D.hero = group;
+  scene.add(group);
+
+  const lines = [
+    { text: "BREATHING", material: chromeMat, size: 0.58, italic: 0 },
+    { text: "INSTRUMENTS", material: chromeMat, size: 0.58, italic: 0 },
+    { text: "FROM", material: inkTextMat, size: 0.4, italic: 0 },
+    { text: "LIQUID", material: orangeTextMat, size: 0.62, italic: 0.08 },
+  ];
+
+  const lineGap = 0.08; // vertical gap between lines
+  const charGap = 0.05; // tracking between chars
+
+  let yCursor = 0;
+
+  lines.forEach((line, li) => {
+    const lineGroup = new THREE.Group();
+    // Pre-build all chars in this line
+    const meshes = [];
+    let totalW = 0;
+    for (const ch of line.text) {
+      if (ch === " ") {
+        meshes.push({ space: true, width: line.size * 0.55 });
+        totalW += line.size * 0.55;
+      } else {
+        const mesh = buildCharMesh(ch, line.material, line.size, line.italic);
+        meshes.push({ mesh, width: mesh.userData.width });
+        totalW += mesh.userData.width;
+      }
+    }
+    totalW += (meshes.length - 1) * charGap;
+
+    // Lay out centered
+    let px = -totalW / 2;
+    meshes.forEach((m, ci) => {
+      if (!m.space) {
+        m.mesh.position.x = px + m.width / 2;
+        m.mesh.position.y = 0;
+        lineGroup.add(m.mesh);
+        text3D.heroChars.push({
+          mesh: m.mesh,
+          seed: Math.random() * 1000,
+          rotSeed: (Math.random() - 0.5) * 2,
+          lineIndex: li,
+          italicBase: line.italic ? -line.italic : 0,
+        });
+      }
+      px += m.width + charGap;
+    });
+
+    lineGroup.position.y = yCursor;
+    yCursor -= line.size * 1.05 + lineGap;
+    text3D.heroLines.push({ group: lineGroup, size: line.size });
+    group.add(lineGroup);
+  });
+
+  // Recenter group vertically around its bbox
+  _box.setFromObject(group);
+  const centerY = (_box.max.y + _box.min.y) / 2;
+  group.children.forEach((lg) => (lg.position.y -= centerY));
+
+  layoutHero3D();
+}
+
+function layoutHero3D() {
+  if (!text3D.hero) return;
+  // Scale to fit viewport width — concise, bubble-y, leaves room to breathe.
+  const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
+  const vw = vh * camera.aspect;
+  text3D.hero.scale.setScalar(1);
+  _box.setFromObject(text3D.hero);
+  const natW = _box.max.x - _box.min.x;
+  const natH = _box.max.y - _box.min.y;
+  // Target: 45% of viewport width OR 48% of viewport height — compact, leaves
+  // breathing room around it so inflate-on-hover doesn't swallow the screen.
+  const sw = (vw * 0.45) / natW;
+  const sh = (vh * 0.48) / natH;
+  const s = Math.min(sw, sh);
+  text3D.hero.scale.setScalar(s);
+  // Position slightly above center (hero is upper area of landing)
+  text3D.hero.position.set(0, 0, 0.2);
+  text3D.heroBaseY = 0;
+}
+
+function buildMarquee3D() {
+  const group = new THREE.Group();
+  text3D.marquee = group;
+  scene.add(group);
+
+  const phrase = "BREATHING · INSTRUMENTS · FROM · LIQUID · ";
+  const repeats = 6;
+  const size = 0.32;
+  const charGap = 0.035;
+
+  // Build one pass so we know its width, then replicate
+  const passWidth = (() => {
+    let sum = 0;
+    for (const ch of phrase) {
+      if (ch === " ") sum += size * 0.55;
+      else {
+        // Approximate width from a sample mesh (build & discard)
+        const tmp = buildCharMesh(ch, chromeMat, size, 0);
+        sum += tmp.userData.width + charGap;
+        tmp.geometry.dispose();
+      }
+    }
+    return sum;
+  })();
+
+  let px = 0;
+  for (let r = 0; r < repeats; r++) {
+    const italic = r % 2 === 1 ? 0.08 : 0;
+    const mat = r % 2 === 1 ? orangeTextMat : chromeMat;
+    for (const ch of phrase) {
+      if (ch === " ") {
+        px += size * 0.55;
+        continue;
+      }
+      const mesh = buildCharMesh(ch, mat, size, italic);
+      mesh.position.x = px + mesh.userData.width / 2;
+      group.add(mesh);
+      text3D.marqueeChars.push({
+        mesh,
+        seed: Math.random() * 1000,
+        rotSeed: (Math.random() - 0.5) * 2,
+        italicBase: -italic,
+      });
+      px += mesh.userData.width + charGap;
+    }
+  }
+  text3D.marqueeLoopWidth = passWidth;
+
+  layoutMarquee3D();
+}
+
+function layoutMarquee3D() {
+  if (!text3D.marquee) return;
+  const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
+  // Pin near bottom of viewport (world-Y), slightly off the edge
+  text3D.marqueeBaseY = -vh * 0.42;
+  text3D.marquee.position.y = text3D.marqueeBaseY;
+  text3D.marquee.position.z = 0.0;
+}
+
+// ---- Font loading → kicks off text build + hides HTML equivalents ----
+const fontLoader = new FontLoader();
+fontLoader.load(
+  "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_regular.typeface.json",
+  (font) => {
+    text3D.font = font;
+    buildHero3D();
+    buildMarquee3D();
+    text3D.ready = true;
+    document.body.classList.add("text3d-ready");
+    // Stop wiggling the HTML hero + marquee — they're now invisible
+    wiggleState.chars = wiggleState.chars.filter((c) => {
+      const p = c.el;
+      if (p.closest && (p.closest(".hero-title") || p.closest(".foot-marquee"))) {
+        // Clear any residual inline styles
+        p.style.transform = "";
+        p.style.filter = "";
+        p.style.opacity = "";
+        p.style.textShadow = "";
+        return false;
+      }
+      return true;
+    });
+  },
+  undefined,
+  (err) => {
+    console.warn("TOMI NIASHI: 3D font failed to load, keeping HTML text", err);
+  }
+);
+
+// ---- Per-frame update: per-char proximity inflate + marquee scroll ----
+const _tmpNdc = new THREE.Vector3();
+function updateText3D(t) {
+  if (!text3D.ready) return;
+
+  const mx = state.mouse.x;
+  const my = state.mouse.y;
+  const W = state.width;
+  const H = state.height;
+  // Tighter influence radius so only nearby letters puff up
+  const R = 180;
+  const R2 = R * R;
+
+  // --- Hero: scroll-sync + per-char gentle bubble pulse ---
+  if (text3D.hero) {
+    // Move hero up as user scrolls, so it feels tied to the hero section.
+    const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
+    const worldPerPx = vh / H;
+    text3D.hero.position.y =
+      text3D.heroBaseY + state.scroll * worldPerPx * 1.1;
+    // Very subtle group-level tilt from cursor — just enough to feel alive
+    text3D.hero.rotation.y = state.mouse.nx * 0.04;
+    text3D.hero.rotation.x = -state.mouse.ny * 0.03;
+
+    for (let i = 0; i < text3D.heroChars.length; i++) {
+      const c = text3D.heroChars[i];
+      // Project char position to screen
+      c.mesh.updateWorldMatrix(true, false);
+      _tmpNdc.setFromMatrixPosition(c.mesh.matrixWorld);
+      _tmpNdc.project(camera);
+      const sx = (_tmpNdc.x * 0.5 + 0.5) * W;
+      const sy = (-_tmpNdc.y * 0.5 + 0.5) * H;
+
+      const dx = mx - sx;
+      const dy = my - sy;
+      const d2 = dx * dx + dy * dy;
+
+      let s = 0;
+      if (d2 < R2) s = 1 - Math.sqrt(d2) / R;
+      const ss = s * s;
+
+      // Gentle ambient breathing + small pop-on-hover — max ~1.35x
+      const amb = Math.sin(t * 1.6 + c.seed) * 0.025;
+      const scale = 1 + amb + ss * 0.35;
+      c.mesh.scale.setScalar(scale);
+
+      // Barely-there rotation so letters look alive, not spinning
+      const rx = Math.sin(t * 1.8 + c.seed) * 0.02 + c.rotSeed * ss * 0.08;
+      const ry = Math.sin(t * 1.2 + c.seed * 0.7) * ss * 0.1;
+      const rz = c.italicBase + Math.sin(t * 3.0 + c.seed) * ss * 0.05;
+      c.mesh.rotation.x = rx;
+      c.mesh.rotation.y = ry;
+      c.mesh.rotation.z = rz;
+    }
+  }
+
+  // --- Marquee: translate loop + per-char gentle bubble pulse ---
+  if (text3D.marquee) {
+    const speed = 0.22; // world units/sec — calmer ribbon
+    const x = -((t * speed) % text3D.marqueeLoopWidth);
+    // Scale the ribbon so letters are ~4% of viewport height — a concise strip
+    const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
+    const targetWorldH = vh * 0.045;
+    const natH = 0.32; // buildCharMesh size for marquee
+    const sc = targetWorldH / natH;
+    text3D.marquee.scale.setScalar(sc);
+    text3D.marquee.position.x = x * sc;
+    text3D.marquee.position.y = text3D.marqueeBaseY;
+
+    for (let i = 0; i < text3D.marqueeChars.length; i++) {
+      const c = text3D.marqueeChars[i];
+      c.mesh.updateWorldMatrix(true, false);
+      _tmpNdc.setFromMatrixPosition(c.mesh.matrixWorld);
+      _tmpNdc.project(camera);
+      const sx = (_tmpNdc.x * 0.5 + 0.5) * W;
+      const sy = (-_tmpNdc.y * 0.5 + 0.5) * H;
+
+      const dx = mx - sx;
+      const dy = my - sy;
+      const d2 = dx * dx + dy * dy;
+
+      let s = 0;
+      if (d2 < R2) s = 1 - Math.sqrt(d2) / R;
+      const ss = s * s;
+
+      const amb = Math.sin(t * 2.0 + c.seed) * 0.02;
+      const scale = 1 + amb + ss * 0.3;
+      c.mesh.scale.setScalar(scale);
+
+      const rz = c.italicBase + Math.sin(t * 3.5 + c.seed) * ss * 0.06;
+      const rx = c.rotSeed * ss * 0.05;
+      c.mesh.rotation.z = rz;
+      c.mesh.rotation.x = rx;
+    }
+  }
+}
+
+// -----------------------------------------------------------
 // Raycasting for interactions
 // -----------------------------------------------------------
 const raycaster = new THREE.Raycaster();
@@ -785,6 +1158,11 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   bgUniforms.uRes.value.set(state.width, state.height);
   resizeGrain();
+  // Keep 3D text fitted to the new viewport
+  if (text3D.ready) {
+    layoutHero3D();
+    layoutMarquee3D();
+  }
 });
 
 // -----------------------------------------------------------
@@ -1223,6 +1601,9 @@ function animate() {
   // Text wiggles — every char responds to cursor proximity
   updateWiggles(t);
 
+  // 3D hero title + 3D marquee — inflates, rotates, reflects
+  updateText3D(t);
+
   requestAnimationFrame(animate);
 }
 // -----------------------------------------------------------
@@ -1550,14 +1931,9 @@ function updateWiggles(t) {
   }
 }
 
-// Layout changes → remeasure
-window.addEventListener(
-  "scroll",
-  () => {
-    wiggleState.dirty = true;
-  },
-  { passive: true }
-);
+// Layout changes → remeasure. NOTE: scroll does NOT dirty — positions
+// are stored as page coords and we subtract scrollY in the hot loop.
+// Re-measuring every scroll event would tank perf in heavy text areas.
 window.addEventListener("resize", () => {
   wiggleState.dirty = true;
 });

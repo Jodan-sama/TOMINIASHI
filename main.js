@@ -219,7 +219,7 @@ async function initAudio() {
   perfFilter.frequency.value = 6500;
   perfFilter.Q.value = 0.8;
   const perfGain = ctx.createGain();
-  perfGain.gain.value = 1.45;
+  perfGain.gain.value = 1.2;
   perfGain.connect(perfFilter);
   perfFilter.connect(master);
   // Ambient bus — drones, long reverb tail, always very filtered
@@ -268,15 +268,15 @@ async function initAudio() {
   lfo.connect(lfoGain);
   lfoGain.connect(perfFilter.frequency);
   lfo.start();
-  // Gentle limiter on the master so occasional loud grains never clip or
-  // dominate. -12 dB threshold with a 20 dB soft knee and 3:1 ratio — we
-  // barely hear compression working, it just caps peaks.
+  // Limiter on the master so occasional loud grains can't blow past
+  // everything else. -14 dB threshold with a 15 dB knee and 5:1 ratio —
+  // a firmer hand than before so spiky vocal samples get tamed.
   const masterComp = ctx.createDynamicsCompressor();
-  masterComp.threshold.value = -12;
-  masterComp.knee.value = 20;
-  masterComp.ratio.value = 3;
-  masterComp.attack.value = 0.005;
-  masterComp.release.value = 0.12;
+  masterComp.threshold.value = -14;
+  masterComp.knee.value = 15;
+  masterComp.ratio.value = 5;
+  masterComp.attack.value = 0.004;
+  masterComp.release.value = 0.1;
   // routing out: master -> compressor -> analyser -> destination
   master.connect(masterComp);
   masterComp.connect(analyser);
@@ -600,7 +600,7 @@ function rateForDegreeOnSample(degree, sampleHz, octaveBias = 0) {
 // `targetPeak`. Only scales DOWN — leaves quieter recordings alone so we
 // don't amplify noise floors. Returns the scale factor applied (1 if
 // untouched).
-function normalizePcmInPlace(pcm, targetPeak = 0.8) {
+function normalizePcmInPlace(pcm, targetPeak = 0.65) {
   if (!pcm || !pcm.length) return 1;
   let peak = 0;
   for (let i = 0; i < pcm.length; i++) {
@@ -640,7 +640,7 @@ async function recordBreath(durMs = 3000) {
     // quiet ones.  Only scale DOWN (factor < 1) — we don't want to boost
     // quiet samples and amplify their noise floor. Target peak 0.8 is
     // "pretty hot but not clipping".
-    normalizePcmInPlace(pcm, 0.8);
+    normalizePcmInPlace(pcm, 0.65);
     // Run YIN pitch detection so we can pitch-correct playback. Synchronous
     // but fast (~20-40ms for 2048 samples); acceptable at record time.
     const detectedHz = detectHz(pcm, audioBuf.sampleRate);
@@ -1035,53 +1035,40 @@ function pickSection() {
 // cycling at the same 16th subdivision produces a constantly reshuffling
 // hook). Subdivisions occasionally differ for a speedier counter-voice.
 function pickArps() {
-  if (!state.samples.length) return;
-  const pool = pickSamplesForMood(state.mood);
-  // Pre-pick three distinct samples when possible.
-  const pickOne = () => pool[Math.floor(state.prng() * pool.length)];
-  const s1 = pickOne();
-  let s2 = pickOne(); for (let k = 0; k < 4 && s2 && s1 && s2.id === s1.id && pool.length > 1; k++) s2 = pickOne();
-  let s3 = pickOne(); for (let k = 0; k < 4 && s3 && s2 && s3.id === s2.id && pool.length > 1; k++) s3 = pickOne();
-  // Subdivisions: most of the time voices 1+2 sit on 16ths, voice 3 flutters
-  // at 8ths or 32nds.  Occasionally voice 2 drops to 8ths for a slower counter.
+  // Arps run on INSTRUMENTS now — no sample dependency. Always repopulate
+  // on pickSection so the hook morphs.
   const subdivChoice = state.prng();
   const sub1 = 16;
   const sub2 = subdivChoice < 0.25 ? 8 : 16;
   const sub3 = subdivChoice < 0.4 ? 32 : subdivChoice < 0.8 ? 16 : 8;
-  // Octave stack: bass voice on 0, counter on 0 or -1, ornament on +1.
   const oct2 = state.prng() < 0.3 ? -1 : 0;
   const oct3 = state.prng() < 0.2 ? 2 : 1;
-  // Random pattern assignment.  Make sure at least one of the three is
-  // picked from the "poppy" first half of the library (most hook-friendly).
   const poppyTop = Math.min(6, ARP_PATTERNS.length);
   const pat1 = ARP_PATTERNS[Math.floor(state.prng() * poppyTop)];
   const pat2 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
   const pat3 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
+  // Each voice picks its own instrument per section so you get three
+  // distinct timbres layered (e.g. glass root + marimba counter + flute
+  // ornament).  Shuffle INSTRUMENTS and take the first three so voices
+  // don't collide on the same timbre.
+  const shuffled = INSTRUMENTS.slice().sort(() => state.prng() - 0.5);
   state.arps = [
-    { pattern: pat1, subdiv: sub1, octave: 0,    gate: 0.55, vel: 0.58, sampleId: s1 ? s1.id : null, idxOffset: 0 },
-    { pattern: pat2, subdiv: sub2, octave: oct2, gate: 0.5,  vel: 0.46, sampleId: s2 ? s2.id : null, idxOffset: Math.floor(state.prng() * pat2.length) },
-    { pattern: pat3, subdiv: sub3, octave: oct3, gate: 0.35, vel: 0.4,  sampleId: s3 ? s3.id : null, idxOffset: Math.floor(state.prng() * pat3.length) },
+    { pattern: pat1, subdiv: sub1, octave: 0,    gate: 0.55, vel: 0.5,  instrument: shuffled[0], idxOffset: 0 },
+    { pattern: pat2, subdiv: sub2, octave: oct2, gate: 0.5,  vel: 0.42, instrument: shuffled[1], idxOffset: Math.floor(state.prng() * pat2.length) },
+    { pattern: pat3, subdiv: sub3, octave: oct3, gate: 0.35, vel: 0.34, instrument: shuffled[2] || shuffled[0], idxOffset: Math.floor(state.prng() * pat3.length) },
   ];
 }
-// Fire one arp voice at global 16th-step `i`.
-// subdiv=16 => one note per 16th. subdiv=8 => every other 16th.
-// subdiv=32 => two notes per 16th (on the 16th + the half).
+// Fire one arp voice at global 16th-step `i`. Plays via the instrument
+// synth (not vocal samples) so multiple arp voices stack cleanly without
+// loud-sample dominance.  subdiv=16 => one note per 16th. subdiv=8 =>
+// every other 16th. subdiv=32 => two notes per 16th.
 function fireArpVoice(voice, voiceIdx, i, when) {
   if (!voice || !voice.pattern || !voice.pattern.length) return;
-  const pool = state.samples;
-  if (!pool.length) return;
-  let meta = voice.sampleId ? pool.find(s => s.id === voice.sampleId) : null;
-  if (!meta) meta = pool[Math.floor(state.prng() * pool.length)];
-  if (!meta) return;
-
   const sixteenth = beatDuration() / 4;
-
-  // Decide the sub-events this 16th-step produces for this voice.
-  // events[] holds { when, patIdx } pairs.
   const events = [];
   if (voice.subdiv === 32) {
-    events.push({ when: when,                      patIdx: (voice.idxOffset + i * 2) });
-    events.push({ when: when + sixteenth * 0.5,    patIdx: (voice.idxOffset + i * 2 + 1) });
+    events.push({ when: when,                   patIdx: (voice.idxOffset + i * 2) });
+    events.push({ when: when + sixteenth * 0.5, patIdx: (voice.idxOffset + i * 2 + 1) });
   } else if (voice.subdiv === 16) {
     events.push({ when: when, patIdx: (voice.idxOffset + i) });
   } else if (voice.subdiv === 8) {
@@ -1090,41 +1077,29 @@ function fireArpVoice(voice, voiceIdx, i, when) {
   } else {
     return;
   }
-
-  // Stereo placement per voice so the three arps sit in different parts of
-  // the field. Voice 0 = center, voice 1 = left, voice 2 = right.
-  const basePan = voiceIdx === 1 ? -0.55 : voiceIdx === 2 ? 0.55 : 0;
-  const restProb = voice.restProb || (voiceIdx === 2 ? 0.28 : voiceIdx === 1 ? 0.15 : 0.08);
-
-  state.store.get(meta.id).then(full => {
-    if (!full) return;
-    for (const ev of events) {
-      // Rest: skip this note entirely, leaving a gap for breath.
-      if (state.prng() < restProb) continue;
-      const patLen = voice.pattern.length;
-      const idx = ((Math.floor(ev.patIdx) % patLen) + patLen) % patLen;
-      const deg = voice.pattern[idx] + voice.octave * 7;
-      // Short grains so fast arps stay articulate and don't mud up.
-      const maxDurMs = voice.subdiv === 32 ? 120 : voice.subdiv === 16 ? 240 : 420;
-      const durMs = Math.min((sixteenth * 1000) * voice.gate * (voice.subdiv === 32 ? 0.5 : 1), maxDurMs);
-      // Accent pattern: downbeat loudest, off-beats softer — gives the line
-      // a pulse even when the notes themselves repeat.
-      const accent = (i % 4 === 0) ? 1.0 : (i % 2 === 0) ? 0.88 : 0.78;
-      const vel = voice.vel * accent * (0.85 + state.prng() * 0.2)
-                * (1 + state.excitement * 0.1);
-      playNote(full, meta, ev.when, {
-        degree: deg,
-        vel,
-        durationMs: durMs,
-        layer: 'event',
-        panOverride: basePan + (state.prng() * 2 - 1) * 0.25,
-      });
-    }
-  });
+  const restProb = voice.restProb != null ? voice.restProb
+                 : voiceIdx === 2 ? 0.32
+                 : voiceIdx === 1 ? 0.18
+                 : 0.1;
+  for (const ev of events) {
+    if (state.prng() < restProb) continue;
+    const patLen = voice.pattern.length;
+    const idx = ((Math.floor(ev.patIdx) % patLen) + patLen) % patLen;
+    const deg = voice.pattern[idx];
+    const maxDurMs = voice.subdiv === 32 ? 110 : voice.subdiv === 16 ? 220 : 380;
+    const durMs = Math.min((sixteenth * 1000) * voice.gate * (voice.subdiv === 32 ? 0.5 : 1), maxDurMs);
+    const accent = (i % 4 === 0) ? 1.0 : (i % 2 === 0) ? 0.88 : 0.78;
+    const vel = voice.vel * accent * (0.85 + state.prng() * 0.2) * (1 + state.excitement * 0.08);
+    // Pitch: scale-degree -> semitones (honours current key + root), plus a
+    // direct semitone octave offset for the voice.  Instruments have their
+    // own reference pitch (A3/A4/E4) so semis=0 is naturally middle.
+    const semis = degreeToSemitones(deg) + voice.octave * 12;
+    scheduleInstrumentNote(ev.when, semis, durMs, vel, voice.instrument);
+  }
 }
 
 function tickArps(i, when) {
-  if (!state.samples.length || !state.arps) return;
+  if (!state.arps) return;
   for (let v = 0; v < state.arps.length; v++) {
     fireArpVoice(state.arps[v], v, i, when);
   }
@@ -1199,32 +1174,23 @@ const ARP_PATTERNS = [
 ];
 
 function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 1) {
-  // Arpeggio uses the lead voice sample so it's consonant with the melody.
-  const leadId = state.melodyVoices.leadId;
-  const meta = state.samples.find(s => s.id === leadId) || pickSample(state.samples);
-  if (!meta) return;
-  state.store.get(meta.id).then(full => {
-    if (!full) return;
-    const pattern = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
-    const sixteenth = beatDuration() / 4;
-    const steps = stepsBeats * 4;
-    for (let i = 0; i < steps; i++) {
-      const pIdx = i % pattern.length;
-      // Layer octaves as the arp progresses so it "builds"
-      const octaveJump = Math.floor(i / pattern.length) * 7;
-      const deg = baseDegree + pattern[pIdx] + octaveJump;
-      const t = startWhen + i * sixteenth;
-      playNote(full, meta, t, {
-        degree: deg,
-        vel: (0.52 + (pIdx === 0 ? 0.2 : 0)) * velScale,
-        durationMs: 220 + state.prng() * 160,
-        layer: 'event',
-        filterHz: 2400 + (i * 120) + state.prng() * 600,
-        extraDetune: (state.prng() * 2 - 1) * 4,
-        panOverride: Math.sin(i * 0.7) * 0.6,
-      });
-    }
-  });
+  // One-shot excited burst used by the excite button.  Plays through the
+  // instrument synth to match the continuous arp voices.  Picks a bright
+  // instrument (glass or marimba) for the rush feel.
+  const pattern = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
+  const sixteenth = beatDuration() / 4;
+  const steps = stepsBeats * 4;
+  const instrument = state.prng() < 0.5 ? 'glass' : 'marimba';
+  for (let i = 0; i < steps; i++) {
+    const pIdx = i % pattern.length;
+    // Each octave-length cycle steps up one real octave for a builder feel
+    const octaveJump = Math.floor(i / pattern.length);
+    const deg = baseDegree + pattern[pIdx];
+    const t = startWhen + i * sixteenth;
+    const vel = (0.38 + (pIdx === 0 ? 0.12 : 0)) * velScale;
+    const semis = degreeToSemitones(deg) + octaveJump * 12;
+    scheduleInstrumentNote(t, semis, 180 + state.prng() * 120, vel, instrument);
+  }
 }
 
 // --- Transport ---
@@ -1377,21 +1343,19 @@ function scheduleStep(i, when) {
     }
   }
 
-  // --- LEAD VOCAL: follows the melody line on downbeats (held, long notes) ---
+  // --- LEAD VOCAL: supports the melody line, fires half as often now that
+  // the instrument arps carry the melodic weight.  Downbeats 1 and 3 only
+  // (step 0 and 8), with a rare ornament at step 14.
   const leadMeta = getVoiceSample('lead');
   if (leadMeta) {
-    const leadOn = onBeat
-      || (step === 6 && state.intensity > 0.5)
-      || (step === 10 && state.prng() < 0.35)
-      || (step === 14 && state.prng() < 0.5);
+    const leadOn = (step === 0) || (step === 8)
+      || (step === 14 && state.prng() < 0.25);
     if (leadOn) {
-      // Prefer the melody-line's current degree if this step is on the line,
-      // otherwise use the most recent melody-line degree we saw.
       const deg = melodyDegThisStep != null ? melodyDegThisStep : state.melodyStep;
       state.store.get(leadMeta.id).then(full => {
         if (!full) return;
         const durMs = 700 + state.prng() * 1100;
-        const vel = (onBeat ? 0.72 : 0.5) + state.prng() * 0.1;
+        const vel = (onBeat ? 0.68 : 0.48) + state.prng() * 0.08;
         playNote(full, leadMeta, when, {
           degree: deg,
           vel,
@@ -1403,19 +1367,19 @@ function scheduleStep(i, when) {
     }
   }
 
-  // --- COUNTER VOICE (medium filler, diatonic 3rd/5th above lead) ---
+  // --- COUNTER VOICE: halved.  Fires on beat-2 (step 4) and beat-4 (step
+  // 12) only, with an occasional offbeat flourish.
   const counterMeta = getVoiceSample('counter');
   if (counterMeta) {
-    const counterOn = offbeat
-      || (step === 6 && state.prng() < 0.6)
-      || (step === 14 && state.prng() < 0.6);
+    const counterOn = (step === 4) || (step === 12)
+      || ((step === 6 || step === 14) && state.prng() < 0.25);
     if (counterOn) {
       const deg = state.melodyStep + state.melodyVoices.counterOffset
                 + (state.prng() < 0.2 ? (state.prng() < 0.5 ? -2 : 2) : 0);
       state.store.get(counterMeta.id).then(full => {
         if (!full) return;
         const durMs = 380 + state.prng() * 520;
-        const vel = (offbeat ? 0.52 : 0.42) + state.prng() * 0.08;
+        const vel = (offbeat ? 0.48 : 0.4) + state.prng() * 0.06;
         playNote(full, counterMeta, when, {
           degree: deg,
           vel,
@@ -1430,11 +1394,11 @@ function scheduleStep(i, when) {
   // The 16th-fill layer is redundant now that three arp voices are always
   // running. Keep a very sparse one for variety — random short pops that
   // sit between the arps without fighting them.
-  const isLeadStep = onBeat
-    || step === 6 || step === 10 || step === 14
-    || (step === 2 && state.intensity > 0.7);
-  const isCounterStep = offbeat || step === 6 || step === 14;
-  if (!isLeadStep && !isCounterStep && state.prng() < 0.12) {
+  // Lead/counter now fire on a reduced set of steps (0,4,8,12 plus rare
+  // ornaments); the fill layer only lights up on the rest.
+  const isLeadStep = step === 0 || step === 8 || step === 14;
+  const isCounterStep = step === 4 || step === 12 || step === 6;
+  if (!isLeadStep && !isCounterStep && state.prng() < 0.06) {
     const pool = pickSamplesForMood(state.mood);
     const fillMeta = pool[Math.floor(state.prng() * pool.length)];
     if (fillMeta) {
@@ -1919,7 +1883,7 @@ async function syncCloudSamples() {
       const pcm = audioBuf.getChannelData(0).slice();
       // Cloud samples uploaded by older builds aren't peak-normalised.
       // Apply the same 0.8 ceiling so remote + local samples behave alike.
-      normalizePcmInPlace(pcm, 0.8);
+      normalizePcmInPlace(pcm, 0.65);
       // Use the pitch the sample row already carries; otherwise run YIN now
       // and push the result back so no one else has to redo the work.
       let detectedHz = rs.detected_hz != null ? Number(rs.detected_hz) : null;

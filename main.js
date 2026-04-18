@@ -33,6 +33,11 @@ const state = {
   // whenever pickSection re-runs.
   melodyVoices: { leadId: null, counterId: null, counterOffset: 2 },
   currentInstrument: 'soft_pad',
+  // The *melody line* is the catchy hook the backing instrument + lead
+  // vocal both play. A new pattern is picked every 4 bars in pickSection.
+  // Patterns are expressed as 7-scale-step degrees (0 = root, 2 = 3rd,
+  // 4 = 5th, 7 = octave, etc.).
+  melodyLine: null,
   // Persistence sharing preferences (stored in localStorage)
   shareMyBreaths: localStorage.getItem(LS_SHARE_BREATHS) === '1',
   includeSharedPool: localStorage.getItem(LS_INCLUDE_SHARED) === '1',
@@ -216,7 +221,7 @@ async function initAudio() {
   instFilter.frequency.value = 2200;
   instFilter.Q.value = 0.6;
   const instBus = ctx.createGain();
-  instBus.gain.value = 0.12;
+  instBus.gain.value = 0.22;
   instBus.connect(instFilter);
   instFilter.connect(master);
   // A bit of reverb on the instrument so it blends behind the vocals
@@ -781,6 +786,52 @@ function stepMelody() {
 
 // Section picker: every 4 bars. Re-picks mood, intensity, and — crucially —
 // the two melody voice samples so lead + counter change together.
+// ======== MELODY LINE (the catchy hook) ========
+// Pop-shaped phrases. Every number is a scale degree (0 = root, 2 = 3rd,
+// 4 = 5th, 7 = octave). These are designed to have clear contour and
+// memorable shape — question/answer, ascent/descent, pedal-point, etc.
+// The backing instrument and the lead vocal both play these.
+const MELODY_LINES = [
+  // 8-step: short, anthemic
+  [0, 2, 4, 2, 0, 4, 2, 0],               // classic do-mi-sol pop
+  [0, 4, 2, 4, 0, 2, 4, 7],               // with lift to the octave
+  [4, 2, 0, 2, 4, 5, 4, 2],               // start on 5, come down
+  [0, 2, 4, 5, 4, 2, 0, -3],              // drop to the 6 below for sweetness
+  [7, 4, 2, 0, 2, 4, 7, 4],               // octave cascade + return
+  [0, 1, 2, 4, 2, 1, 0, 4],               // stepwise rise with a leap home
+  [0, 4, 2, 0, 4, 2, 0, -1],              // rocking pedal
+  [2, 4, 5, 4, 2, 0, 2, 4],               // neighbour figure
+  [0, 4, 7, 4, 5, 4, 2, 0],               // triad climb, step-down fall
+  [4, 5, 4, 2, 0, 2, 4, -3],              // pop-verse shape
+  [0, 2, 1, 2, 4, 5, 4, 2],               // passing tones
+  [0, 7, 4, 2, 0, -3, 0, 4],              // wide interval hook
+  // 16-step: full-hook developments (the Max Cooper long-line shape)
+  [0, 2, 4, 2, 0, 2, 4, 7, 4, 2, 0, 2, 4, 2, 0, -3],
+  [0, 2, 4, 5, 4, 2, 0, -3, 0, 2, 4, 2, 0, 2, 4, 7],
+  [0, 4, 2, 0, 4, 2, 0, -3, 0, 4, 2, 4, 7, 4, 2, 0],
+  [0, 2, 4, 2, 4, 5, 7, 5, 4, 2, 0, 2, 4, 2, 0, -3],
+  [4, 2, 0, 2, 4, 7, 4, 2, 0, -3, 0, 2, 4, 2, 0, 2],
+  [0, 1, 2, 4, 5, 4, 2, 1, 0, 2, 4, 2, 0, -1, -3, 0],
+];
+
+function pickMelodyLine() {
+  const patt = MELODY_LINES[Math.floor(state.prng() * MELODY_LINES.length)];
+  // 8-step patterns fit nicely in 1 bar at 8th notes OR 2 bars at 16th notes.
+  // 16-step patterns fit 1 bar at 16ths OR 2 bars at 8ths.
+  // Occasionally we pick 16ths so the melody moves very fast (Max-Cooper-ish).
+  const sub = state.prng() < 0.55 ? 8 : 16;
+  // Melody octave drifts slightly per section so the tune doesn't stay in
+  // one register forever.
+  const oct = state.prng() < 0.2 ? -1 : 0;
+  state.melodyLine = {
+    pattern: patt,
+    subdiv: sub,
+    octave: oct,
+    vel: 0.24 + state.prng() * 0.08,  // stays quiet; backing, not lead
+    gateFrac: sub === 8 ? 0.72 : 0.55,
+  };
+}
+
 function pickSection() {
   const r = state.prng();
   state.mood = r < 0.3 ? 'chatter' : r < 0.55 ? 'new' : r < 0.8 ? 'memory' : 'hush';
@@ -804,6 +855,8 @@ function pickSection() {
   // Rotate the backing instrument per section, weighted toward soft_pad.
   const ir = state.prng();
   state.currentInstrument = ir < 0.5 ? 'soft_pad' : ir < 0.85 ? 'flute' : 'glass';
+  // New melody line for this section — the hook.
+  pickMelodyLine();
   // Reassign the three continuous arpeggiator voices.
   pickArps();
 }
@@ -909,10 +962,11 @@ function tickArps(i, when) {
 }
 
 function pickNewKey() {
-  // Heavily favour the pleasant scales. Lydian / mixolydian / dorian
-  // appear as fun exceptions, not the rule.
+  // Pop structures: major is the spine, natural minor is the sad-pretty
+  // sibling, dorian/mixolydian are the interesting-but-still-catchy modes.
+  // Pentatonics get tiny weights — they're there as rare contrast.
   // Order matches SCALES: [maj-pent, min-pent, major, nat-min, dorian, mixolydian, lydian]
-  const scaleWeights = [0.32, 0.22, 0.28, 0.10, 0.04, 0.02, 0.02];
+  const scaleWeights = [0.04, 0.03, 0.42, 0.25, 0.16, 0.07, 0.03];
   let r = state.prng();
   let i = 0;
   for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
@@ -1081,43 +1135,63 @@ function scheduleStep(i, when) {
 
   if (!state.samples.length) return;
 
-  // --- LEAD VOICE (held, long vocal notes) ---
-  // Lead hits every beat (0,4,8,12), plus more occasional ornaments.
+  // --- MELODY LINE (the catchy hook) ---
+  // The backing instrument plays the current melody-line on its subdivision
+  // (8ths or 16ths), so there's a continuously flowing tune that changes
+  // shape every 4 bars. The lead vocal locks onto this same line on its
+  // downbeats so the vocal reinforces the hook instead of doing its own
+  // thing.
+  const ml = state.melodyLine;
+  let melodyDegThisStep = null;   // what the melody line plays at THIS step (if any)
+  if (ml && ml.pattern && ml.pattern.length) {
+    // melody-line progression counter: how many line-steps into the song
+    let lineStepIdx = null;
+    if (ml.subdiv === 8 && step % 2 === 0) {
+      lineStepIdx = bar * 8 + step / 2;
+    } else if (ml.subdiv === 16) {
+      lineStepIdx = bar * 16 + step;
+    }
+    if (lineStepIdx != null) {
+      const patLen = ml.pattern.length;
+      const patIdx = ((lineStepIdx % patLen) + patLen) % patLen;
+      const deg = ml.pattern[patIdx] + ml.octave * 7;
+      melodyDegThisStep = deg;
+      state.melodyStep = deg;
+      // Fire the backing instrument — this is the audible melody line.
+      const durMs = (beatDuration() * 1000) * (ml.subdiv === 8 ? 0.48 : 0.23) * ml.gateFrac;
+      const semis = degreeToSemitones(deg) - 12; // octave below so it sits under the vocal
+      scheduleInstrumentNote(when, semis, durMs, ml.vel);
+      // Every 4 bars add a sustained root under the melody so the harmony
+      // has a bass anchor (fat pop chord feel).
+      if (step === 0 && bar % 2 === 0) {
+        scheduleInstrumentNote(when, degreeToSemitones(0) - 24, durMs * 4, ml.vel * 0.9);
+      }
+    }
+  }
+
+  // --- LEAD VOCAL: follows the melody line on downbeats (held, long notes) ---
   const leadMeta = getVoiceSample('lead');
   if (leadMeta) {
-    const leadBaseDegrees = [0, 2, 4, 2, 5, 4, 2, 0]; // bar-level motif
     const leadOn = onBeat
       || (step === 6 && state.intensity > 0.5)
-      || (step === 10 && state.prng() < 0.4)
-      || (step === 14 && state.prng() < 0.55)
-      || (step === 2 && state.intensity > 0.7 && state.prng() < 0.35);
+      || (step === 10 && state.prng() < 0.35)
+      || (step === 14 && state.prng() < 0.5);
     if (leadOn) {
-      const motifIdx = (bar * 4 + Math.floor(step / 4)) % leadBaseDegrees.length;
-      const baseDeg = leadBaseDegrees[motifIdx];
-      const deg = baseDeg + (state.prng() < 0.4 ? (state.prng() < 0.5 ? -2 : 2) : 0);
-      state.melodyStep = deg;
+      // Prefer the melody-line's current degree if this step is on the line,
+      // otherwise use the most recent melody-line degree we saw.
+      const deg = melodyDegThisStep != null ? melodyDegThisStep : state.melodyStep;
       state.store.get(leadMeta.id).then(full => {
         if (!full) return;
         const durMs = 700 + state.prng() * 1100;
-        const vel = (onBeat ? 0.75 : 0.55) + state.prng() * 0.1;
+        const vel = (onBeat ? 0.72 : 0.5) + state.prng() * 0.1;
         playNote(full, leadMeta, when, {
           degree: deg,
           vel,
           durationMs: durMs,
           layer: 'perf',
-          panOverride: Math.sin(bar * 0.6) * 0.4 + (state.prng() * 2 - 1) * 0.15,
+          panOverride: Math.sin(bar * 0.6) * 0.35 + (state.prng() * 2 - 1) * 0.15,
         });
       });
-      // Soft synth pad mirrors the same scale degree under the vocal so the
-      // melody always has harmonic ground. Quieter on the off-beat ornaments.
-      const padSemis = degreeToSemitones(deg) - 12; // octave below the vocal
-      const padVel = onBeat ? 0.32 : 0.22;
-      const padDur = onBeat ? beatDuration() * 1000 * 1.1 : beatDuration() * 1000 * 0.55;
-      scheduleInstrumentNote(when, padSemis, padDur, padVel);
-      // Add a fifth under the downbeats every other bar for a chord feel
-      if (onBeat && bar % 2 === 0 && (step === 0 || step === 8)) {
-        scheduleInstrumentNote(when, padSemis + 7, padDur, padVel * 0.7);
-      }
     }
   }
 
@@ -1212,9 +1286,10 @@ function excite() {
   state.transport.bpm = Math.min(160, state.transport.bpm + 6);
   state.intensity = Math.min(1, state.intensity + 0.18);
   state.excitement = Math.min(1, state.excitement + 0.55);
-  // Reshuffle the three arp voices so the hook transforms immediately.
+  // Reshuffle the three arp voices AND pick a new melody-line hook so the
+  // whole song transforms when you press excite.
+  pickMelodyLine();
   pickArps();
-  // One-shot burst arp over the top for a rush.
   const nextBeatWhen = state.ctx ? state.ctx.currentTime + 0.05 : 0;
   if (state.samples.length && state.ctx) scheduleArpeggio(nextBeatWhen, 8, 0, 1);
 }

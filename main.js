@@ -7,6 +7,7 @@ import {
   pullSamples, pushSample, updateSample, deleteSample,
   fetchSampleBlob,
 } from './cloud.js';
+import { detectHz, rateForTarget, REFERENCE_HZ } from './pitch.js';
 
 const DB_NAME = 'tominiashi_synth';
 const DB_STORE = 'samples';
@@ -145,6 +146,10 @@ function sampleMeta(s) {
     survivalScore: s.survivalScore == null ? 1 : s.survivalScore,
     parentId: s.parentId || null,
     durationMs: (s.pcm.length / s.sampleRate) * 1000,
+    detectedHz: s.detectedHz || null,
+    storagePath: s.storagePath || null,
+    shared: !!s.shared,
+    genomeId: s.genomeId || null,
   };
 }
 // ======== AUDIO ========
@@ -505,6 +510,15 @@ function degreeToSemitones(degree) {
 }
 function rateForSemitones(st) { return Math.pow(2, st / 12); }
 function rateForDegree(degree) { return rateForSemitones(degreeToSemitones(degree)); }
+// Pitch-aware version: if the sample's detected fundamental is known, land
+// the note exactly on the target pitch (choosing the nearest octave so we
+// don't chipmunk).  Falls back to the naive rate-shift when detection hasn't
+// happened yet for that sample.
+function rateForDegreeOnSample(degree, sampleHz, octaveBias = 0) {
+  if (!sampleHz) return rateForSemitones(degreeToSemitones(degree) + octaveBias * 12);
+  const targetHz = REFERENCE_HZ * Math.pow(2, degreeToSemitones(degree) / 12);
+  return rateForTarget(sampleHz, targetHz, octaveBias);
+}
 // ======== RECORDER ========
 let micStream = null;
 async function ensureMic() {
@@ -530,6 +544,9 @@ async function recordBreath(durMs = 3000) {
     const ab = await blob.arrayBuffer();
     const audioBuf = await state.ctx.decodeAudioData(ab);
     const pcm = audioBuf.getChannelData(0).slice();
+    // Run YIN pitch detection so we can pitch-correct playback. Synchronous
+    // but fast (~20-40ms for 2048 samples); acceptable at record time.
+    const detectedHz = detectHz(pcm, audioBuf.sampleRate);
     const record = {
       id: crypto.randomUUID(),
       pcm, sampleRate: audioBuf.sampleRate,
@@ -540,6 +557,7 @@ async function recordBreath(durMs = 3000) {
       storagePath: null,
       shared: !!state.shareMyBreaths,
       genomeId: state.genome.id,
+      detectedHz,
     };
     await state.store.add(record);
     const meta = sampleMeta(record);
@@ -561,6 +579,7 @@ async function recordBreath(durMs = 3000) {
         survival_score: 1,
         parent_id: null,
         shared: record.shared,
+        detected_hz: detectedHz,
       }).then(path => {
         if (path) { record.storagePath = path; meta.storagePath = path; state.store.update(record.id, { storagePath: path }).catch(() => {}); }
       }).catch(e => console.warn('cloud upload failed', e));
@@ -696,6 +715,11 @@ async function deriveSample(parentMeta) {
     const gain = 0.6 + state.prng() * 0.5;
     for (let i = 0; i < child.length; i++) child[i] *= gain;
   }
+  // A derived clip may have a different detected pitch than the parent — if
+  // we reversed or sliced out a specific vowel, the fundamental can shift.
+  // Re-detect on the child.  Inherit the parent's pitch as a best guess if
+  // detection fails on the slice.
+  const detectedHz = detectHz(child, sr) || parentMeta.detectedHz || null;
   const rec = {
     id: crypto.randomUUID(),
     pcm: child, sampleRate: sr,
@@ -704,6 +728,7 @@ async function deriveSample(parentMeta) {
     mutationLevel: Math.min(0.7, (parentMeta.mutationLevel || 0) + 0.1),
     source: 'derived', survivalScore: 0.8,
     parentId: parentMeta.id,
+    detectedHz,
   };
   await state.store.add(rec);
   state.samples.push(sampleMeta(rec));
@@ -984,6 +1009,7 @@ function playNote(full, meta, when, opts = {}) {
     filterHz = null,     // null => no per-grain filter for melody (perf bus shapes it)
     extraDetune = 0,
     panOverride = null,
+    octaveBias = 0,       // shift up/down octaves (e.g. ambient uses -1 or -2)
   } = opts;
   // Mouse X nudges the transposition but stays small enough that the key
   // remains obvious.
@@ -993,7 +1019,9 @@ function playNote(full, meta, when, opts = {}) {
   const maxOffset = Math.max(0, meta.durationMs - clampedDur);
   // Prefer the meaty middle of the sample for vocal clarity
   const offsetMs = Math.min(maxOffset, Math.max(0, meta.durationMs * 0.1 + state.prng() * maxOffset * 0.7));
-  const rate = rateForDegree(transposedDegree);
+  // Use the sample's detected fundamental if we've analysed it; fall back to
+  // naive degree-to-rate mapping otherwise.
+  const rate = rateForDegreeOnSample(transposedDegree, meta.detectedHz || full.detectedHz, octaveBias);
   const pan = panOverride != null ? panOverride : (Math.sin(state.melodyStep * 0.6) * 0.45 + (state.prng() * 2 - 1) * 0.2);
   triggerGrain(full, {
     offsetMs, durationMs: clampedDur,
@@ -1588,6 +1616,28 @@ async function syncCloudGenome() {
   }
 }
 
+// Upgrade legacy samples that were recorded before pitch detection existed.
+// Runs in the background one sample at a time so it never blocks anything.
+async function upgradeSamplesWithPitch() {
+  const needing = state.samples.filter(m => !m.detectedHz);
+  for (const meta of needing) {
+    try {
+      const full = await state.store.get(meta.id);
+      if (!full || !full.pcm) continue;
+      const hz = detectHz(full.pcm, full.sampleRate);
+      if (!hz) continue;
+      meta.detectedHz = hz;
+      full.detectedHz = hz;
+      await state.store.update(meta.id, { detectedHz: hz }).catch(() => {});
+      if (cloudReady && meta.storagePath) {
+        updateSample(meta.id, { detected_hz: hz }).catch(() => {});
+      }
+      // Yield to the event loop so rapid scheduler ticks aren't delayed
+      await new Promise(r => setTimeout(r, 25));
+    } catch (e) { console.warn('pitch upgrade failed for', meta.id, e); }
+  }
+}
+
 async function syncCloudSamples() {
   if (!cloudReady || !state.ctx) return;
   const remote = await pullSamples(state.genome.id, { includeShared: state.includeSharedPool }).catch(() => []);
@@ -1602,6 +1652,15 @@ async function syncCloudSamples() {
       const audioBuf = await state.ctx.decodeAudioData(ab).catch(() => null);
       if (!audioBuf) continue;
       const pcm = audioBuf.getChannelData(0).slice();
+      // Use the pitch the sample row already carries; otherwise run YIN now
+      // and push the result back so no one else has to redo the work.
+      let detectedHz = rs.detected_hz != null ? Number(rs.detected_hz) : null;
+      if (!detectedHz) {
+        detectedHz = detectHz(pcm, audioBuf.sampleRate);
+        if (detectedHz) {
+          updateSample(rs.id, { detected_hz: detectedHz }).catch(() => {});
+        }
+      }
       const record = {
         id: rs.id, pcm, sampleRate: audioBuf.sampleRate,
         recordedAt: new Date(rs.recorded_at).getTime(),
@@ -1614,12 +1673,10 @@ async function syncCloudSamples() {
         storagePath: rs.storage_path,
         shared: rs.shared,
         genomeId: rs.genome_id,
+        detectedHz,
       };
       await state.store.add(record);
       const meta = sampleMeta(record);
-      meta.shared = record.shared;
-      meta.storagePath = record.storage_path;
-      meta.genomeId = record.genomeId;
       state.samples.push(meta);
       added++;
     } catch (e) { console.warn('sample sync failed for', rs.id, e); }
@@ -1656,8 +1713,11 @@ async function boot() {
       await ensureMic();
       startTransport();
       startRainPad();
-      // Pull cloud samples into IDB + state in the background
-      syncCloudSamples().catch(e => console.warn('sample sync error', e));
+      // Pull cloud samples into IDB + state in the background, then run
+      // pitch detection for any sample that doesn't already have it.
+      syncCloudSamples()
+        .then(() => upgradeSamplesWithPitch())
+        .catch(e => console.warn('sample sync error', e));
       status.textContent = state.samples.length
         ? 'playing — move mouse to modulate · ✦ excite · ~ chill'
         : 'record a breath (◉) to give it material — melody awaits samples';

@@ -86,6 +86,7 @@ export async function pushSample({ id, genome_id, blob, mime, ...meta }) {
     survival_score: meta.survival_score != null ? meta.survival_score : 1,
     parent_id: meta.parent_id || null,
     shared: !!meta.shared,
+    detected_hz: meta.detected_hz != null ? meta.detected_hz : null,
   };
   const ins = await cloud.from('tn_samples').insert(row);
   if (ins.error) { log('insert error', ins.error); return null; }

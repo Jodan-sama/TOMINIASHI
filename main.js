@@ -28,6 +28,9 @@ const state = {
   // sticks across section changes.
   intensityBias: 0,
   scaleIndex: 0, scaleRoot: 0, melodyStep: 0, pendingKeyChange: false,
+  // Current key's lifespan in bars — usually 8, but 50% of the time gets
+  // extended to 16 so a mood can really settle, with a mid-way arp refresh.
+  currentKeyLength: 8,
   mouse: { x: 0.5, y: 0.5, down: false, lastMoveAt: 0 },
   started: false, recording: false,
   bufferCache: new Map(),
@@ -60,7 +63,7 @@ const state = {
   ],
 };
 const STEPS_PER_BAR = 16;
-const KEY_CHANGE_EVERY_BARS = 8;
+const KEY_CHANGE_EVERY_BARS = 8; // base cadence — may extend to 16 per pickNewKey
 const ROOT_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 function keyLabel() {
   const root = ((state.scaleRoot % 12) + 12) % 12;
@@ -1075,12 +1078,12 @@ function pickSection() {
 // partials on glass, vibrato sparkle on flute). Octave +1 on top of that
 // is piercing. Clamp them down; marimba and soft_pad have headroom.
 function safeOctaveForInstrument(inst, desired) {
-  // Flute + glass are bright at their native pitch.  Force them BELOW
-  // native (octave -1 max) so they sit as sweeteners rather than ice
-  // picks.  Marimba gets full range, soft_pad too.
-  if (inst === 'flute' || inst === 'glass') return Math.max(-2, Math.min(-1, desired));
-  if (inst === 'marimba')                   return Math.max(-2, Math.min(1, desired));
-  return Math.max(-2, Math.min(1, desired)); // soft_pad
+  // Flute + glass are bright — keep them at or below native (octave 0 max)
+  // so they stay as sweeteners, not ice picks.  Marimba has a wide safe
+  // range; soft_pad can go anywhere warm.
+  if (inst === 'flute' || inst === 'glass') return Math.max(-2, Math.min(0, desired));
+  if (inst === 'marimba')                   return Math.max(-2, Math.min(2, desired));
+  return Math.max(-3, Math.min(2, desired)); // soft_pad
 }
 
 function pickArps() {
@@ -1088,17 +1091,22 @@ function pickArps() {
   const sub1 = 16;
   const sub2 = subdivChoice < 0.25 ? 8 : 16;
   const sub3 = subdivChoice < 0.4 ? 32 : subdivChoice < 0.8 ? 16 : 8;
-  // Voice 1 (counter) now explores lower registers more often — 20% bass,
-  // 45% -1 oct, 35% middle. Nothing above 0 here, keeps it warm.
+  // Voice 1 used to be locked low (counter/bass).  Now it mostly stays
+  // warm but CAN rise occasionally for a surprise.  Distribution:
+  // 15% -2, 30% -1, 25% 0, 20% +1, 10% +2.
   const oct2Roll = state.prng();
-  const oct2Desired = oct2Roll < 0.2 ? -2 : oct2Roll < 0.65 ? -1 : 0;
-  // Voice 2 (ornament) usually sits high, but 15% of the time it DROPS an
-  // octave for a surprising dark-ornament flavour. Clamped per-instrument
-  // below so flute/glass still stay below the ear-piercing zone.
+  const oct2Desired = oct2Roll < 0.15 ? -2
+                    : oct2Roll < 0.45 ? -1
+                    : oct2Roll < 0.70 ? 0
+                    : oct2Roll < 0.90 ? 1
+                    : 2;
+  // Voice 2 still leans high (ornament/lead) but now with a real chance
+  // of dropping deep.  8% -2, 17% -1, 25% 0, 35% +1, 15% +2.
   const oct3Roll = state.prng();
-  const oct3Desired = oct3Roll < 0.15 ? -1
-                    : oct3Roll < 0.45 ? 0
-                    : oct3Roll < 0.9  ? 1
+  const oct3Desired = oct3Roll < 0.08 ? -2
+                    : oct3Roll < 0.25 ? -1
+                    : oct3Roll < 0.50 ? 0
+                    : oct3Roll < 0.85 ? 1
                     : 2;
   const poppyTop = Math.min(6, ARP_PATTERNS.length);
   const pat1 = ARP_PATTERNS[Math.floor(state.prng() * poppyTop)];
@@ -1210,6 +1218,9 @@ function pickNewKey() {
   for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
   state.scaleIndex = i;
   state.scaleRoot = NICE_ROOTS[Math.floor(state.prng() * NICE_ROOTS.length)];
+  // 50% of keys stick around for 16 bars (double length) so the ear can
+  // really settle into them.  The other 50% use the usual 8-bar cadence.
+  state.currentKeyLength = state.prng() < 0.5 ? 16 : KEY_CHANGE_EVERY_BARS;
 }
 
 // --- Note trigger aligned to grid ---
@@ -1251,20 +1262,47 @@ function playNote(full, meta, when, opts = {}) {
 // Arpeggio pattern library — pop-pleasing shapes expressed as scale degrees.
 // Mostly triads + seventh voicings with some octave leaps and descending
 // hooks. Patterns of different lengths produce polyrhythmic overlap when
-// assigned to different arp voices at the same subdivision.
+// assigned to different arp voices at the same subdivision (3-vs-4-vs-6
+// etc. creates constantly-reshuffling hooks).
 const ARP_PATTERNS = [
-  [0, 4, 7, 4],                 // root-3rd-5th-3rd  (classic pop arp)
-  [0, 2, 4, 7, 4, 2],           // ascending + return
-  [0, 4, 7, 9, 7, 4],           // reach to the 6
-  [7, 4, 2, 0, 2, 4],           // descend and return
+  // Classic 4-step triads + seventh voicings
+  [0, 4, 7, 4],                 // root-3rd-5th-3rd (classic pop)
   [0, 7, 4, 7],                 // bouncing root-octave-3rd
+  [0, 4, 7, 9],                 // triad climbing to the 6
+  [7, 4, 0, 4],                 // descending triad with return
+
+  // 3-step shapes — polyrhythm against 4/6/8 patterns
+  [0, 4, 7],                    // simple triad climb
+  [0, 2, 4],                    // stepwise 3-note climb
+  [7, 4, 0],                    // triad descent
+  [4, 0, 7],                    // inverted triad
+
+  // 5-step shapes
+  [9, 7, 4, 2, 0],              // pure descent through the scale
+  [0, 4, 2, 0, 7],              // hook with octave leap
+
+  // 6-step pop shapes
+  [0, 2, 4, 7, 4, 2],           // ascend + return
+  [0, 4, 7, 9, 7, 4],           // reach to the 6 and fall
+  [7, 4, 2, 0, 2, 4],           // descend and come back
   [0, 2, 4, 5, 4, 2],           // stepwise lilt
   [0, 4, 2, 7, 4, 9],           // zig-zag with leaps
-  [0, 4, 7, 4, 9, 4, 7, 4],     // pivoting on the 3rd
-  [0, 7, 0, 4, 0, 7, 0, 9],     // bass-pedal with upper voice
   [4, 7, 9, 7, 4, 2],           // circling a high cluster
-  [0, 2, 4, 2, 0, -3],          // drop to the 6 below
-  [0, 11, 7, 4, 2, 4],          // leading tone pulled down home
+  [0, 2, 4, 2, 0, -3],          // drop to the 6 below for sweetness
+  [0, 11, 7, 4, 2, 4],          // leading-tone surprise
+  [11, 7, 4, 0, 4, 7],          // descending from leading tone, then rise
+  [0, 2, 4, 2, 9, 4],           // phrase with a wide jump
+  [7, 4, 2, 4, 7, 9],           // climbing phrase from middle
+
+  // 6-step pedal-tone shapes (repeated root with melody above)
+  [0, 0, 4, 0, 7, 4],           // root-pedal with triad melody
+  [4, 0, 2, 0, 7, 0],           // root-pedal anchor, 3rd/5th riding
+  [0, 4, 0, 7, 0, 9],           // root-pedal climbing the chord
+
+  // 8-step developed hooks
+  [0, 4, 7, 4, 9, 4, 7, 4],     // pivoting on the 3rd
+  [0, 7, 0, 4, 0, 7, 0, 9],     // bass-pedal with upper voice ascent
+  [0, 2, 4, 7, 9, 7, 4, 2],     // long rise + descent
 ];
 
 function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 1) {
@@ -1362,9 +1400,19 @@ function scheduleStep(i, when) {
 
   // --- Structure / section changes ---
   if (step === 0 && bar > 0 && bar % 4 === 0) pickSection();
-  if (step === 0 && bar > 0 && bar % KEY_CHANGE_EVERY_BARS === 0) {
+  // Key change when `currentKeyLength` bars have elapsed since the last
+  // key pick.  Length is 8 or 16 (chosen by pickNewKey).
+  const barsSinceKey = bar - state.transport.keyBar;
+  if (step === 0 && bar > 0 && barsSinceKey >= state.currentKeyLength) {
     pickNewKey();
     state.transport.keyBar = bar;
+  }
+  // Mid-key arp refresh: if we're halfway through a double-length (16-bar)
+  // key, reshuffle the three arp voices so the second half gets a new
+  // arpeggio line without changing the key.  Creates a B-section feel
+  // inside the same harmony.
+  if (step === 0 && state.currentKeyLength === 16 && barsSinceKey === 8) {
+    pickArps();
   }
 
   // --- DRUMS ---

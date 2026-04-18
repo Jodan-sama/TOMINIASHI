@@ -28,7 +28,7 @@
   </header>
 
   <aside class="readouts mono" id="readouts">
-    <div class="rrow"><span>GENOME</span><span id="r-genome">—</span></div>
+    <div class="rrow clickable" id="r-genome-row" title="click to copy full genome id"><span>GENOME</span><span id="r-genome">—</span></div>
     <div class="rrow"><span>GEN</span><span id="r-gen">0</span></div>
     <div class="rrow"><span>MOOD</span><span id="r-mood">dormant</span></div>
     <div class="rrow"><span>STATE</span><span id="r-state">asleep</span></div>
@@ -63,7 +63,11 @@
       <label class="mono" for="vol">vol</label>
       <input id="vol" type="range" min="0" max="1" step="0.01" value="0.7" />
     </div>
-    <div class="hint mono">always playing · mouse X=note bias · mouse Y=filter · ✦ excite = faster & louder · ~ chill = slower & softer</div>
+    <div class="share mono">
+      <label><input type="checkbox" id="tog-share" /> share my breaths</label>
+      <label><input type="checkbox" id="tog-pool" /> include public pool</label>
+    </div>
+    <div class="hint mono">always playing · mouse X=note bias · mouse Y=filter · ✦ excite · ~ chill</div>
   </footer>
 
   <div class="status mono" id="status">tap anywhere to begin</div>

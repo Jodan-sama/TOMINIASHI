@@ -1,9 +1,18 @@
 // TOMI NIASHI — breathing synthesizer simulator
 // Sections: prng, genome, store, audio, recorder, voice, evolver, scheduler, input, viz, ui, boot
 
+import {
+  cloudReady,
+  pullGenome, pushGenome,
+  pullSamples, pushSample, updateSample, deleteSample,
+  fetchSampleBlob,
+} from './cloud.js';
+
 const DB_NAME = 'tominiashi_synth';
 const DB_STORE = 'samples';
 const LS_GENOME = 'tn_genome_v1';
+const LS_SHARE_BREATHS = 'tn_share_breaths';
+const LS_INCLUDE_SHARED = 'tn_include_shared';
 
 const state = {
   ctx: null, master: null, revSend: null, delSend: null, analyser: null, analyserData: null,
@@ -24,6 +33,9 @@ const state = {
   // whenever pickSection re-runs.
   melodyVoices: { leadId: null, counterId: null, counterOffset: 2 },
   currentInstrument: 'soft_pad',
+  // Persistence sharing preferences (stored in localStorage)
+  shareMyBreaths: localStorage.getItem(LS_SHARE_BREATHS) === '1',
+  includeSharedPool: localStorage.getItem(LS_INCLUDE_SHARED) === '1',
   // Three continuous arpeggiator voices. Each has its own pattern, step
   // subdivision, octave offset, gate fraction, and assigned sample.
   // Polyrhythm emerges from mismatched pattern lengths (e.g. 4-vs-6-vs-3).
@@ -520,9 +532,34 @@ async function recordBreath(durMs = 3000) {
       generation: state.genome.generation,
       mutationLevel: 0, source: 'mic', survivalScore: 1,
       parentId: null,
+      storagePath: null,
+      shared: !!state.shareMyBreaths,
+      genomeId: state.genome.id,
     };
     await state.store.add(record);
-    state.samples.push(sampleMeta(record));
+    const meta = sampleMeta(record);
+    meta.shared = record.shared;
+    meta.storagePath = null;
+    state.samples.push(meta);
+    // Fire-and-forget cloud upload. Keeps local playback snappy; sync is best-effort.
+    if (cloudReady) {
+      pushSample({
+        id: record.id,
+        genome_id: state.genome.id,
+        blob, mime: blob.type,
+        sample_rate: record.sampleRate,
+        duration_ms: meta.durationMs,
+        recorded_at: record.recordedAt,
+        generation: record.generation,
+        mutation_level: 0,
+        source: 'mic',
+        survival_score: 1,
+        parent_id: null,
+        shared: record.shared,
+      }).then(path => {
+        if (path) { record.storagePath = path; meta.storagePath = path; state.store.update(record.id, { storagePath: path }).catch(() => {}); }
+      }).catch(e => console.warn('cloud upload failed', e));
+    }
     return record;
   } finally {
     state.recording = false;
@@ -668,10 +705,15 @@ async function deriveSample(parentMeta) {
 }
 async function evolveTick() {
   const params = state.genome.params;
+  const cloudSampleUpdates = [];
   for (const meta of state.samples) {
     meta.mutationLevel = Math.min(1, meta.mutationLevel + params.degradationRate * (0.5 + state.prng()));
     if (state.prng() < 0.06) meta.survivalScore *= 0.88;
     try { await state.store.update(meta.id, { mutationLevel: meta.mutationLevel, survivalScore: meta.survivalScore }); } catch (e) {}
+    // Only sync samples that actually live in the cloud (mic recordings).
+    if (cloudReady && meta.storagePath) {
+      cloudSampleUpdates.push({ id: meta.id, patch: { mutation_level: meta.mutationLevel, survival_score: meta.survivalScore } });
+    }
   }
   const fresh = state.samples.filter((s) => s.mutationLevel < 0.35 && s.source !== 'derived');
   if (fresh.length && state.prng() < 0.45) {
@@ -682,6 +724,9 @@ async function evolveTick() {
   const dead = state.samples.filter((s) => s.survivalScore < 0.05);
   for (const s of dead) {
     try { await state.store.del(s.id); } catch (e) {}
+    if (cloudReady && s.storagePath) {
+      deleteSample(s.id, s.storagePath).catch(() => {});
+    }
   }
   state.samples = state.samples.filter((s) => s.survivalScore >= 0.05);
   drift('pitchDrift', 0.01, 0, 1);
@@ -696,6 +741,13 @@ async function evolveTick() {
   state.genome.generation++;
   state.lastEvolveAt = Date.now();
   saveGenome();
+  // Best-effort cloud sync for the genome + any cloud-backed samples
+  if (cloudReady) {
+    pushGenome(state.genome).catch(() => {});
+    for (const u of cloudSampleUpdates) {
+      updateSample(u.id, u.patch).catch(() => {});
+    }
+  }
 }
 // ======== SCHEDULER (grid transport) ========
 // A musical clock. Every 16 steps per bar. Key changes every N bars.
@@ -1390,6 +1442,38 @@ function wireControls() {
   el('vol').addEventListener('input', (e) => {
     if (state.master) state.master.gain.value = parseFloat(e.target.value);
   });
+  // Click the genome row to copy the full id — used for moving an instrument
+  // between devices or inviting someone to meet yours.
+  const genomeRow = el('r-genome-row');
+  if (genomeRow) {
+    genomeRow.addEventListener('click', async () => {
+      if (!state.genome) return;
+      try {
+        await navigator.clipboard.writeText(state.genome.id);
+        genomeRow.querySelector('#r-genome').textContent = 'copied';
+        setTimeout(() => { /* next updateReadouts restores the display */ }, 900);
+      } catch (e) { console.warn('clipboard failed', e); }
+    });
+  }
+  // Share-my-breaths toggle: affects new recordings going forward.
+  const togShare = el('tog-share');
+  if (togShare) {
+    togShare.checked = !!state.shareMyBreaths;
+    togShare.addEventListener('change', (e) => {
+      state.shareMyBreaths = !!e.target.checked;
+      localStorage.setItem(LS_SHARE_BREATHS, state.shareMyBreaths ? '1' : '0');
+    });
+  }
+  // Include-shared-pool toggle: re-pulls samples from cloud with the new flag.
+  const togPool = el('tog-pool');
+  if (togPool) {
+    togPool.checked = !!state.includeSharedPool;
+    togPool.addEventListener('change', (e) => {
+      state.includeSharedPool = !!e.target.checked;
+      localStorage.setItem(LS_INCLUDE_SHARED, state.includeSharedPool ? '1' : '0');
+      if (state.started) syncCloudSamples().catch(() => {});
+    });
+  }
 }
 // ======== BOOT ========
 let lastFrame = 0;
@@ -1409,6 +1493,65 @@ function loop(t) {
   requestAnimationFrame(loop);
 }
 
+async function syncCloudGenome() {
+  if (!cloudReady) return;
+  const remote = await pullGenome(state.genome.id).catch(() => null);
+  if (remote) {
+    // Cloud wins — apply its values over the local cache
+    state.genome = {
+      id: remote.id,
+      seed: Number(remote.seed),
+      birthday: new Date(remote.birthday).getTime(),
+      params: remote.params,
+      generation: remote.generation,
+      activationCount: remote.activation_count,
+    };
+    saveGenome();
+  } else {
+    // First time this instrument has touched the cloud — push the local one up
+    pushGenome(state.genome).catch(() => {});
+  }
+}
+
+async function syncCloudSamples() {
+  if (!cloudReady || !state.ctx) return;
+  const remote = await pullSamples(state.genome.id, { includeShared: state.includeSharedPool }).catch(() => []);
+  const localIds = new Set(state.samples.map(s => s.id));
+  let added = 0;
+  for (const rs of remote) {
+    if (localIds.has(rs.id)) continue;
+    try {
+      const blob = await fetchSampleBlob(rs.storage_path);
+      if (!blob) continue;
+      const ab = await blob.arrayBuffer();
+      const audioBuf = await state.ctx.decodeAudioData(ab).catch(() => null);
+      if (!audioBuf) continue;
+      const pcm = audioBuf.getChannelData(0).slice();
+      const record = {
+        id: rs.id, pcm, sampleRate: audioBuf.sampleRate,
+        recordedAt: new Date(rs.recorded_at).getTime(),
+        lastPlayedAt: rs.last_played_at ? new Date(rs.last_played_at).getTime() : 0,
+        generation: rs.generation,
+        mutationLevel: Number(rs.mutation_level) || 0,
+        source: rs.source,
+        survivalScore: Number(rs.survival_score) || 1,
+        parentId: rs.parent_id,
+        storagePath: rs.storage_path,
+        shared: rs.shared,
+        genomeId: rs.genome_id,
+      };
+      await state.store.add(record);
+      const meta = sampleMeta(record);
+      meta.shared = record.shared;
+      meta.storagePath = record.storage_path;
+      meta.genomeId = record.genomeId;
+      state.samples.push(meta);
+      added++;
+    } catch (e) { console.warn('sample sync failed for', rs.id, e); }
+  }
+  if (added) console.log('[cloud] pulled', added, 'samples');
+}
+
 async function boot() {
   state.genome = loadGenome();
   state.prng = mulberry32((state.genome.seed ^ state.genome.generation) >>> 0);
@@ -1425,7 +1568,9 @@ async function boot() {
   initInput();
   wireControls();
   requestAnimationFrame((t) => { lastFrame = t; loop(t); });
-  // wait for user gesture before creating AudioContext
+  // Cloud genome sync happens before audio start; sample sync happens after
+  // initAudio (decodeAudioData needs a context).
+  await syncCloudGenome();
   const status = document.getElementById('status');
   const kick = async () => {
     if (state.started) return;
@@ -1434,9 +1579,10 @@ async function boot() {
     try {
       await initAudio();
       await ensureMic();
-      // start always-on transport + organic pad
       startTransport();
       startRainPad();
+      // Pull cloud samples into IDB + state in the background
+      syncCloudSamples().catch(e => console.warn('sample sync error', e));
       status.textContent = state.samples.length
         ? 'playing — move mouse to modulate · ✦ excite · ~ chill'
         : 'record a breath (◉) to give it material — melody awaits samples';

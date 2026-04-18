@@ -146,3 +146,10 @@ body {
 .mood-new     { --mood-color: #e8c66e; }
 
 body.awake .readouts { border-color: var(--mood-color, var(--accent)); }
+
+.rrow.clickable { cursor: pointer; }
+.rrow.clickable:hover span:last-child { color: var(--accent); }
+
+.share { display: flex; gap: 10px; font-size: 10px; color: var(--fg-dim); align-items: center; }
+.share label { display: flex; align-items: center; gap: 4px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.06em; }
+.share input[type="checkbox"] { accent-color: var(--accent); margin: 0; }

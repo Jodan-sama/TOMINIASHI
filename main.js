@@ -1199,6 +1199,47 @@ function fireArpVoice(voice, voiceIdx, i, when) {
   });
 }
 
+// A triplet run: N notes spaced at beat/3, stepping up through the scale
+// from the current melody step.  `useVocal` selects vocal grains (short,
+// pitched via playNote) vs instrument synth (the section's currentInstrument).
+function scheduleTripletRun(startWhen, numNotes, useVocal) {
+  const beat = beatDuration();
+  const interval = beat / 3;
+  const noteDurMs = interval * 1000 * 0.88;
+  if (useVocal && state.samples.length) {
+    // Pick one vocal sample for the whole run so the timbre stays consistent
+    const meta = maybeVoiceSample('lead', 0.4);
+    if (!meta) return;
+    state.store.get(meta.id).then(full => {
+      if (!full) return;
+      for (let k = 0; k < numNotes; k++) {
+        const deg = state.melodyStep + k;
+        playNote(full, meta, startWhen + k * interval, {
+          degree: deg,
+          vel: 0.5 * (k === 0 ? 1 : 0.86),
+          durationMs: noteDurMs,
+          layer: 'event',
+          panOverride: Math.sin(k * 0.9) * 0.5,
+        });
+      }
+    });
+  } else {
+    // Instrument run — use the section's current instrument for consistency
+    const inst = state.currentInstrument || 'marimba';
+    for (let k = 0; k < numNotes; k++) {
+      const deg = state.melodyStep + k;
+      const semis = degreeToSemitones(deg);
+      scheduleInstrumentNote(
+        startWhen + k * interval,
+        semis,
+        noteDurMs,
+        0.44 * (k === 0 ? 1 : 0.88),
+        inst
+      );
+    }
+  }
+}
+
 function tickArps(i, when) {
   if (!state.arps) return;
   for (let v = 0; v < state.arps.length; v++) {
@@ -1518,21 +1559,40 @@ function scheduleStep(i, when) {
       || (step === 14 && state.prng() < 0.25);
     if (leadOn) {
       const deg = melodyDegThisStep != null ? melodyDegThisStep : state.melodyStep;
-      // Octave jumps for vocal pitch variety — 12% up, 12% down.
       const r = state.prng();
       const octaveBias = r < 0.12 ? 1 : r < 0.24 ? -1 : 0;
+      // 7% chance the lead plays a 3-note TRIPLET in the space of 1 beat
+      // instead of a single long hit — a rising scale fragment that
+      // catches the ear without changing the phrase structure.
+      const tripletLead = onBeat && state.prng() < 0.07;
       state.store.get(leadMeta.id).then(full => {
         if (!full) return;
-        const durMs = 700 + state.prng() * 1100;
-        const vel = (onBeat ? 0.68 : 0.48) + state.prng() * 0.08;
-        playNote(full, leadMeta, when, {
-          degree: deg,
-          vel,
-          durationMs: durMs,
-          layer: 'perf',
-          octaveBias,
-          panOverride: Math.sin(bar * 0.6) * 0.35 + (state.prng() * 2 - 1) * 0.15,
-        });
+        if (tripletLead) {
+          const beat = beatDuration();
+          const tripletDur = (beat / 3) * 1000 * 0.85;
+          const baseVel = 0.6 + state.prng() * 0.08;
+          for (let i = 0; i < 3; i++) {
+            playNote(full, leadMeta, when + (i * beat) / 3, {
+              degree: deg + i * 2,  // walk up by 3rds for a triadic run
+              vel: baseVel * (i === 0 ? 1 : 0.82),
+              durationMs: tripletDur,
+              layer: 'perf',
+              octaveBias,
+              panOverride: Math.sin((bar + i * 0.2) * 0.6) * 0.35,
+            });
+          }
+        } else {
+          const durMs = 700 + state.prng() * 1100;
+          const vel = (onBeat ? 0.68 : 0.48) + state.prng() * 0.08;
+          playNote(full, leadMeta, when, {
+            degree: deg,
+            vel,
+            durationMs: durMs,
+            layer: 'perf',
+            octaveBias,
+            panOverride: Math.sin(bar * 0.6) * 0.35 + (state.prng() * 2 - 1) * 0.15,
+          });
+        }
       });
     }
   }
@@ -1591,6 +1651,19 @@ function scheduleStep(i, when) {
         });
       });
     }
+  }
+
+  // --- TRIPLET FLOURISH ---
+  // Once in a while (per-bar roll), spawn a 6-note triplet run on a random
+  // beat later in the bar.  Half the time it's a vocal scale-walk, half
+  // the time it's an instrument arp run.  Triplets sit OFF the 16th grid
+  // so they're audibly different from the rest of the rhythm.
+  if (step === 0 && bar > 0 && state.prng() < 0.1) {
+    // Start on beat 2, 3, or 4 so the run is a mid-bar gesture
+    const beatInBar = 1 + Math.floor(state.prng() * 3);
+    const startWhen = when + beatInBar * beatDuration();
+    const useVocal = state.prng() < 0.5 && state.samples.length > 0;
+    scheduleTripletRun(startWhen, 6, useVocal);
   }
 
   // --- CONTINUOUS ARP VOICES ---

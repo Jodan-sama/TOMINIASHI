@@ -794,7 +794,12 @@ function schedulerLoop() {
   const lookahead = 0.18; // seconds
   const now = state.ctx.currentTime;
   while (timeForStep(state.transport.beatIndex) < now + lookahead) {
-    scheduleStep(state.transport.beatIndex, timeForStep(state.transport.beatIndex));
+    try {
+      scheduleStep(state.transport.beatIndex, timeForStep(state.transport.beatIndex));
+    } catch (e) {
+      // Never let a single bad step kill the whole transport; log and march on.
+      console.error('scheduleStep error', e);
+    }
     state.transport.beatIndex++;
   }
   setTimeout(schedulerLoop, 25);
@@ -878,7 +883,7 @@ function scheduleStep(i, when) {
       // melody always has harmonic ground. Quieter on the off-beat ornaments.
       const padSemis = degreeToSemitones(deg) - 12; // octave below the vocal
       const padVel = onBeat ? 0.32 : 0.22;
-      const padDur = onBeat ? beatDuration() * 1000 * 1.1 : durMs * 0.7;
+      const padDur = onBeat ? beatDuration() * 1000 * 1.1 : beatDuration() * 1000 * 0.55;
       scheduleInstrumentNote(when, padSemis, padDur, padVel);
       // Add a fifth under the downbeats every other bar for a chord feel
       if (onBeat && bar % 2 === 0 && (step === 0 || step === 8)) {

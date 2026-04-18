@@ -29,9 +29,6 @@ const state = {
   intensityBias: 0,
   scaleIndex: 0, scaleRoot: 0, melodyStep: 0, pendingKeyChange: false,
   mouse: { x: 0.5, y: 0.5, down: false, lastMoveAt: 0 },
-  // Real-time transposition driven by mouse X. Applied inside
-  // degreeToSemitones so every voice moves in parallel.
-  mouseSemitoneShift: 0,
   started: false, recording: false,
   bufferCache: new Map(),
   lastGrainAt: 0,
@@ -590,11 +587,7 @@ function degreeToSemitones(degree) {
   const len = sc.steps.length;
   const octave = Math.floor(degree / len);
   const idx = ((degree % len) + len) % len;
-  // Mouse X adds a real-time global key shift so every layer (vocals,
-  // melody line, arps) moves together when the user sweeps the mouse
-  // horizontally. Fractional semitones are fine — downstream rate math
-  // handles them smoothly.
-  return sc.steps[idx] + octave * 12 + state.scaleRoot + (state.mouseSemitoneShift || 0);
+  return sc.steps[idx] + octave * 12 + state.scaleRoot;
 }
 function rateForSemitones(st) { return Math.pow(2, st / 12); }
 function rateForDegree(degree) { return rateForSemitones(degreeToSemitones(degree)); }
@@ -1207,10 +1200,11 @@ function tickArps(i, when) {
 
 function pickNewKey() {
   // Order matches SCALES: [maj-pent, min-pent, major, nat-min, harm-min,
-  // dorian, mixolydian, lydian].  Majors + natural minor carry most of the
-  // weight; harmonic minor is the cinematic-minor spice; modes stay as
-  // occasional flavour.
-  const scaleWeights = [0.04, 0.04, 0.36, 0.28, 0.08, 0.12, 0.05, 0.03];
+  // dorian, mixolydian, lydian]. Pre-harmonic-minor weights are preserved
+  // — major leads, natural minor is its sad sibling, modes are occasional
+  // flavour. Harmonic minor gets a small slice (3%) so it shows up rarely
+  // for cinematic colour without dominating.
+  const scaleWeights = [0.04, 0.04, 0.42, 0.25, 0.03, 0.14, 0.05, 0.03];
   let r = state.prng();
   let i = 0;
   for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
@@ -1230,10 +1224,9 @@ function playNote(full, meta, when, opts = {}) {
     panOverride = null,
     octaveBias = 0,       // shift up/down octaves (e.g. ambient uses -1 or -2)
   } = opts;
-  // Mouse X is handled globally inside degreeToSemitones now (it shifts
-  // the current key by up to ±7 semitones in real time), so we don't
-  // double-transpose here.
-  const transposedDegree = degree;
+  // Mouse X nudges the transposition but stays small enough that the key
+  // remains obvious.
+  const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 6);
   const dur = durationMs != null ? durationMs : 500 + state.prng() * 500;
   const clampedDur = Math.min(dur, Math.max(60, meta.durationMs - 20));
   const maxOffset = Math.max(0, meta.durationMs - clampedDur);
@@ -1349,6 +1342,16 @@ function getVoiceSample(slot) {
   if (!meta) meta = pickSample(state.samples);
   return meta;
 }
+// Occasionally swap the assigned voice sample for a random one from the
+// pool so lead/counter grains aren't always the same two vocal timbres.
+// Keeps the structural "voice" concept but adds surprise.
+function maybeVoiceSample(slot, mixProb = 0.3) {
+  if (state.samples.length > 1 && state.prng() < mixProb) {
+    const pool = pickSamplesForMood(state.mood);
+    if (pool.length) return pool[Math.floor(state.prng() * pool.length)];
+  }
+  return getVoiceSample(slot);
+}
 
 function scheduleStep(i, when) {
   const step = i % STEPS_PER_BAR;
@@ -1447,15 +1450,17 @@ function scheduleStep(i, when) {
   // --- LEAD VOCAL: supports the melody line, fires half as often now that
   // the instrument arps carry the melodic weight.  Downbeats 1 and 3 only
   // (step 0 and 8), with a rare ornament at step 14.
-  const leadMeta = getVoiceSample('lead');
+  // Lead rolls a per-trigger sample (30% chance swap from the assigned
+  // voice) so the melody isn't always the same two timbres.
+  const leadMeta = maybeVoiceSample('lead', 0.3);
   if (leadMeta) {
     const leadOn = (step === 0) || (step === 8)
       || (step === 14 && state.prng() < 0.25);
     if (leadOn) {
       const deg = melodyDegThisStep != null ? melodyDegThisStep : state.melodyStep;
-      // Occasional octave jumps for vocal variety — 6% up, 6% down.
+      // Octave jumps for vocal pitch variety — 12% up, 12% down.
       const r = state.prng();
-      const octaveBias = r < 0.06 ? 1 : r < 0.12 ? -1 : 0;
+      const octaveBias = r < 0.12 ? 1 : r < 0.24 ? -1 : 0;
       state.store.get(leadMeta.id).then(full => {
         if (!full) return;
         const durMs = 700 + state.prng() * 1100;
@@ -1474,7 +1479,7 @@ function scheduleStep(i, when) {
 
   // --- COUNTER VOICE: halved.  Fires on beat-2 (step 4) and beat-4 (step
   // 12) only, with an occasional offbeat flourish.
-  const counterMeta = getVoiceSample('counter');
+  const counterMeta = maybeVoiceSample('counter', 0.35);
   if (counterMeta) {
     const counterOn = (step === 4) || (step === 12)
       || ((step === 6 || step === 14) && state.prng() < 0.25);
@@ -1482,7 +1487,7 @@ function scheduleStep(i, when) {
       const deg = state.melodyStep + state.melodyVoices.counterOffset
                 + (state.prng() < 0.2 ? (state.prng() < 0.5 ? -2 : 2) : 0);
       const r = state.prng();
-      const octaveBias = r < 0.06 ? 1 : r < 0.12 ? -1 : 0;
+      const octaveBias = r < 0.12 ? 1 : r < 0.24 ? -1 : 0;
       state.store.get(counterMeta.id).then(full => {
         if (!full) return;
         const durMs = 380 + state.prng() * 520;
@@ -1605,13 +1610,8 @@ function initInput() {
   const driveFilter = () => {
     if (state.ctx) {
       const t = state.ctx.currentTime;
-      // Mouse X: global key shift, ±7 semitones (just over half an octave).
-      // Applied inside degreeToSemitones so the whole stack transposes in
-      // real time.  Smoothed with a first-order lag so tiny jitters don't
-      // cause audible pitch wobble on held notes.
-      const targetShift = (state.mouse.x - 0.5) * 14;
-      state.mouseSemitoneShift = state.mouseSemitoneShift * 0.85 + targetShift * 0.15;
       if (state.perfFilter) {
+        // Mouse Y sweeps the main vocal filter from smoky to open.
         const base = 1800 + (1 - state.mouse.y) * 10000;
         const target = base * (0.9 + state.excitement * 0.3);
         try {
@@ -1622,13 +1622,6 @@ function initInput() {
       if (state.ambFilter) {
         const amb = 300 + (1 - state.mouse.y) * 1400;
         try { state.ambFilter.frequency.setTargetAtTime(amb, t, 0.25); } catch (e) {}
-      }
-      if (state.instFilter) {
-        // Mouse Y also sweeps the instrument bus filter so synth lines
-        // open/close together with the vocal bus.  800 Hz at the bottom,
-        // 4.5 kHz at the top.
-        const instTarget = 800 + (1 - state.mouse.y) * 3700;
-        try { state.instFilter.frequency.setTargetAtTime(instTarget, t, 0.2); } catch (e) {}
       }
       if (state.drumBus) {
         const drumTarget = 0.28 + state.intensity * 0.3 + state.excitement * 0.2;

@@ -12,6 +12,7 @@ import { detectHz, rateForTarget, REFERENCE_HZ } from './pitch.js';
 const DB_NAME = 'tominiashi_synth';
 const DB_STORE = 'samples';
 const LS_GENOME = 'tn_genome_v1';
+const LS_GENOME_HOME = 'tn_genome_home_v1'; // set on first boot; NEVER overwritten by import
 const LS_SHARE_BREATHS = 'tn_share_breaths';
 const LS_INCLUDE_SHARED = 'tn_include_shared';
 
@@ -106,14 +107,33 @@ function newGenome() {
 function loadGenome() {
   try {
     const raw = localStorage.getItem(LS_GENOME);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const g = JSON.parse(raw);
+      // Migration: users from before the home concept won't have a home
+      // recorded yet. Their current genome IS their home — claim it now so
+      // they never lose the path back.
+      if (!localStorage.getItem(LS_GENOME_HOME)) {
+        localStorage.setItem(LS_GENOME_HOME, JSON.stringify({ id: g.id }));
+      }
+      return g;
+    }
   } catch (e) {}
+  // No genome yet — this is a brand new browser. Create one and mark it as
+  // the home for this device forever.
   const g = newGenome();
   localStorage.setItem(LS_GENOME, JSON.stringify(g));
+  localStorage.setItem(LS_GENOME_HOME, JSON.stringify({ id: g.id }));
   return g;
 }
 function saveGenome() {
   try { localStorage.setItem(LS_GENOME, JSON.stringify(state.genome)); } catch (e) {}
+}
+function homeGenomeId() {
+  try {
+    const raw = localStorage.getItem(LS_GENOME_HOME);
+    if (!raw) return null;
+    return JSON.parse(raw).id || null;
+  } catch (e) { return null; }
 }
 // ======== STORE (IndexedDB) ========
 function openStore() {
@@ -1672,6 +1692,19 @@ function updateReadouts() {
   const g = state.genome;
   el('clock').textContent = fmtClock();
   el('r-genome').textContent = g.id.slice(0, 8);
+  // Reveal the RETURN HOME row only when we're visiting someone else's
+  // instrument. On the home instrument, it stays hidden.
+  const homeRow = el('r-home-row');
+  if (homeRow) {
+    const home = homeGenomeId();
+    if (home && home !== g.id) {
+      homeRow.classList.remove('hidden');
+      const homeLabel = el('r-home');
+      if (homeLabel) homeLabel.textContent = home.slice(0, 8);
+    } else {
+      homeRow.classList.add('hidden');
+    }
+  }
   el('r-gen').textContent = g.generation;
   el('r-mood').textContent = state.mood;
   el('r-state').textContent = state.started ? 'playing' : 'paused';
@@ -1746,6 +1779,28 @@ function wireControls() {
       if (state.started) syncCloudSamples().catch(() => {});
     });
   }
+  // Return home: swap localStorage back to the home genome id.  Used when
+  // the user has imported someone else's instrument and wants to come back
+  // to their own.  Home is set once on first boot and never overwritten.
+  const homeRow = el('r-home-row');
+  if (homeRow) {
+    homeRow.addEventListener('click', async () => {
+      const home = homeGenomeId();
+      if (!home) return;
+      if (!confirm('Return to your home instrument (' + home.slice(0, 8) + '…)?\n\nThe current sample cache will be cleared.')) return;
+      const placeholder = {
+        id: home,
+        seed: (Math.random() * 4294967296) >>> 0,
+        birthday: Date.now(),
+        params: state.genome ? state.genome.params : {},
+        generation: 0,
+        activationCount: 0,
+      };
+      localStorage.setItem(LS_GENOME, JSON.stringify(placeholder));
+      if (state.store) { try { await state.store.clear(); } catch (e) {} }
+      location.reload();
+    });
+  }
   // Import instrument: paste a UUID and press Enter. The local IDB cache is
   // cleared so old samples don't mix with the new pool; the page reloads
   // and boot pulls the freshly-referenced instrument from the cloud.
@@ -1763,10 +1818,12 @@ function wireControls() {
         setTimeout(() => { importInput.placeholder = 'paste id + enter'; importInput.style.borderColor = ''; }, 1600);
         return;
       }
-      if (!confirm('Switch this browser to instrument ' + raw.slice(0, 8) + '…? Your local sample cache will be cleared.')) return;
+      const home = homeGenomeId();
+      const note = home && raw !== home ? ' (↶ RETURN HOME takes you back to your original.)' : '';
+      if (!confirm('Visit instrument ' + raw.slice(0, 8) + '…?\n\nYour local sample cache will be cleared.' + note)) return;
       try {
-        // Write a placeholder genome record so boot knows the id it should pull.
-        // Params/generation get overwritten by syncCloudGenome on boot.
+        // Write a placeholder genome record so boot knows the id it should
+        // pull. Params/generation get overwritten by syncCloudGenome on boot.
         const placeholder = {
           id: raw,
           seed: (Math.random() * 4294967296) >>> 0,

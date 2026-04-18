@@ -149,6 +149,8 @@ body.awake .readouts { border-color: var(--mood-color, var(--accent)); }
 
 .rrow.clickable { cursor: pointer; }
 .rrow.clickable:hover span:last-child { color: var(--accent); }
+.rrow.hidden { display: none; }
+#r-home-row span:first-child { color: var(--accent); }
 
 .rrow input[type="text"] {
   width: 120px;

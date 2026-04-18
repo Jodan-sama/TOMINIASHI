@@ -23,6 +23,7 @@ const state = {
   // Counter plays faster + a diatonic 3rd or 5th above. Both switch together
   // whenever pickSection re-runs.
   melodyVoices: { leadId: null, counterId: null, counterOffset: 2 },
+  currentInstrument: 'soft_pad',
 };
 const STEPS_PER_BAR = 16;
 const KEY_CHANGE_EVERY_BARS = 8;
@@ -188,19 +189,19 @@ async function initAudio() {
   const padBus = ctx.createGain();
   padBus.gain.value = 0.0;
   padBus.connect(master);
-  // Instrument bus — soft synth pad sitting under the vocal melody, sharing
-  // the same key + rhythmic pattern. Lowpass keeps it warm and behind.
+  // Instrument bus — soft synth voices sitting WAY under the vocal melody.
+  // Just a hint of harmonic ground, never a focal element.
   const instFilter = ctx.createBiquadFilter();
   instFilter.type = 'lowpass';
-  instFilter.frequency.value = 1800;
-  instFilter.Q.value = 0.7;
+  instFilter.frequency.value = 2200;
+  instFilter.Q.value = 0.6;
   const instBus = ctx.createGain();
-  instBus.gain.value = 0.32;
+  instBus.gain.value = 0.12;
   instBus.connect(instFilter);
   instFilter.connect(master);
-  // Send the instrument to reverb a bit so it blends behind the vocal
+  // A bit of reverb on the instrument so it blends behind the vocals
   const instRev = ctx.createGain();
-  instRev.gain.value = 0.5;
+  instRev.gain.value = 0.55;
   instFilter.connect(instRev);
   // Filter LFO — gentle modulation on perf cutoff so things breathe
   const lfo = ctx.createOscillator();
@@ -243,60 +244,115 @@ async function initAudio() {
   drumVerb.connect(convolver);
   instRev.connect(convolver);
 }
-// ======== INSTRUMENT (soft synth pad sitting under the vocal melody) ========
-// Two slightly detuned triangle oscillators + a shared lowpass envelope.
-// Always reads its pitch from the same scale degrees as the lead vocal so
-// it harmonically supports the melody without competing with it.
-function scheduleInstrumentNote(when, semis, durationMs, vel = 0.45) {
+// ======== INSTRUMENTS (soft, rotating, sit way under the vocal) ========
+// Three flavours: soft pad (warm triangle pad), flute (sine + breath noise),
+// glass (bell-like inharmonic sines). One is selected per section.
+const INSTRUMENTS = ['soft_pad', 'flute', 'glass'];
+
+function scheduleInstrumentNote(when, semis, durationMs, vel = 0.35, kind = null) {
   const ctx = state.ctx;
-  if (!ctx) return;
-  // Reference pitch ~A3 (220 Hz) so the synth sits below the vocal range.
+  if (!ctx || !state.instBus) return;
+  const which = kind || state.currentInstrument || 'soft_pad';
+  if (which === 'flute')   playFlute(when, semis, durationMs, vel);
+  else if (which === 'glass') playGlass(when, semis, durationMs, vel);
+  else                      playSoftPad(when, semis, durationMs, vel);
+}
+
+function playSoftPad(when, semis, durationMs, vel) {
+  const ctx = state.ctx;
   const baseHz = 220 * Math.pow(2, semis / 12);
-  const dur = Math.max(0.12, durationMs / 1000);
+  const dur = Math.max(0.14, durationMs / 1000);
   const t0 = Math.max(when, ctx.currentTime + 0.001);
   const atk = Math.min(0.18, dur * 0.35);
-  const rel = Math.min(0.45, dur * 0.55);
+  const rel = Math.min(0.4, dur * 0.5);
   const env = ctx.createGain();
   env.gain.setValueAtTime(0, t0);
   env.gain.linearRampToValueAtTime(vel, t0 + atk);
   env.gain.setValueAtTime(vel, t0 + Math.max(atk, dur - rel));
   env.gain.linearRampToValueAtTime(0, t0 + dur);
-  // Two detuned triangle voices for a warm pad
-  const osc1 = ctx.createOscillator();
-  const osc2 = ctx.createOscillator();
-  osc1.type = 'triangle';
-  osc2.type = 'triangle';
-  osc1.frequency.setValueAtTime(baseHz, t0);
-  osc2.frequency.setValueAtTime(baseHz, t0);
-  osc1.detune.setValueAtTime(-7, t0);
-  osc2.detune.setValueAtTime(+7, t0);
-  // Subtle vibrato via an LFO on detune
-  const vib = ctx.createOscillator();
-  const vibGain = ctx.createGain();
-  vib.frequency.value = 4.5;
-  vibGain.gain.value = 4;
-  vib.connect(vibGain);
-  vibGain.connect(osc1.detune);
-  vibGain.connect(osc2.detune);
-  vib.start(t0);
-  vib.stop(t0 + dur + 0.05);
-  // Per-note lowpass that opens slightly so notes have a touch of movement
+  const osc1 = ctx.createOscillator(); osc1.type = 'triangle'; osc1.frequency.value = baseHz; osc1.detune.value = -7;
+  const osc2 = ctx.createOscillator(); osc2.type = 'triangle'; osc2.frequency.value = baseHz; osc2.detune.value = +7;
   const lp = ctx.createBiquadFilter();
   lp.type = 'lowpass';
   lp.frequency.setValueAtTime(900, t0);
   lp.frequency.linearRampToValueAtTime(1500, t0 + atk);
   lp.frequency.linearRampToValueAtTime(800, t0 + dur);
   lp.Q.value = 0.6;
-  const pan = ctx.createStereoPanner();
-  pan.pan.value = (Math.random() * 2 - 1) * 0.25;
-  osc1.connect(lp);
-  osc2.connect(lp);
-  lp.connect(env);
-  env.connect(pan);
-  pan.connect(state.instBus);
+  const pan = ctx.createStereoPanner(); pan.pan.value = (Math.random() * 2 - 1) * 0.25;
+  osc1.connect(lp); osc2.connect(lp); lp.connect(env); env.connect(pan); pan.connect(state.instBus);
   osc1.start(t0); osc1.stop(t0 + dur + 0.05);
   osc2.start(t0); osc2.stop(t0 + dur + 0.05);
   osc1.onended = () => { try { osc1.disconnect(); osc2.disconnect(); env.disconnect(); pan.disconnect(); lp.disconnect(); } catch (e) {} };
+}
+
+function playFlute(when, semis, durationMs, vel) {
+  const ctx = state.ctx;
+  const baseHz = 440 * Math.pow(2, semis / 12); // flute sits an octave higher
+  const dur = Math.max(0.18, durationMs / 1000);
+  const t0 = Math.max(when, ctx.currentTime + 0.001);
+  const atk = Math.min(0.07, dur * 0.18);
+  const rel = Math.min(0.18, dur * 0.35);
+  // Sine fundamental
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.value = baseHz;
+  // Vibrato that fades in
+  const vib = ctx.createOscillator();
+  const vibGain = ctx.createGain();
+  vib.frequency.value = 5.4;
+  vibGain.gain.setValueAtTime(0, t0);
+  vibGain.gain.linearRampToValueAtTime(2.2, t0 + Math.min(0.35, dur * 0.4));
+  vib.connect(vibGain); vibGain.connect(osc.detune);
+  vib.start(t0); vib.stop(t0 + dur + 0.05);
+  // Breath noise — short bandpassed burst at the attack
+  const nLen = Math.floor(ctx.sampleRate * Math.min(0.25, dur));
+  const nBuf = ctx.createBuffer(1, nLen, ctx.sampleRate);
+  const nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, 1.6);
+  const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const nbp = ctx.createBiquadFilter(); nbp.type = 'bandpass';
+  nbp.frequency.value = baseHz * 1.6; nbp.Q.value = 5;
+  const nGain = ctx.createGain(); nGain.gain.value = vel * 0.18;
+  nSrc.connect(nbp); nbp.connect(nGain);
+  // Envelope on the sine voice
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0, t0);
+  env.gain.linearRampToValueAtTime(vel, t0 + atk);
+  env.gain.setValueAtTime(vel, t0 + Math.max(atk, dur - rel));
+  env.gain.linearRampToValueAtTime(0, t0 + dur);
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
+  const pan = ctx.createStereoPanner(); pan.pan.value = (Math.random() * 2 - 1) * 0.2;
+  osc.connect(env); env.connect(lp); lp.connect(pan);
+  nGain.connect(pan);
+  pan.connect(state.instBus);
+  osc.start(t0); osc.stop(t0 + dur + 0.05);
+  nSrc.start(t0); nSrc.stop(t0 + nLen / ctx.sampleRate + 0.02);
+  osc.onended = () => { try { osc.disconnect(); env.disconnect(); pan.disconnect(); lp.disconnect(); nGain.disconnect(); } catch (e) {} };
+}
+
+function playGlass(when, semis, durationMs, vel) {
+  // FM-bell-ish: fundamental sine + inharmonic partial that decays fast.
+  const ctx = state.ctx;
+  const baseHz = 440 * Math.pow(2, semis / 12);
+  const dur = Math.max(0.5, (durationMs / 1000) * 1.4);
+  const t0 = Math.max(when, ctx.currentTime + 0.001);
+  const o1 = ctx.createOscillator(); o1.type = 'sine'; o1.frequency.value = baseHz;
+  const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = baseHz * 2.76;
+  const e1 = ctx.createGain();
+  e1.gain.setValueAtTime(0.0001, t0);
+  e1.gain.exponentialRampToValueAtTime(vel * 0.85, t0 + 0.005);
+  e1.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  const e2 = ctx.createGain();
+  e2.gain.setValueAtTime(0.0001, t0);
+  e2.gain.exponentialRampToValueAtTime(vel * 0.35, t0 + 0.002);
+  e2.gain.exponentialRampToValueAtTime(0.0001, t0 + dur * 0.4);
+  const pan = ctx.createStereoPanner(); pan.pan.value = (Math.random() * 2 - 1) * 0.4;
+  o1.connect(e1); e1.connect(pan);
+  o2.connect(e2); e2.connect(pan);
+  pan.connect(state.instBus);
+  o1.start(t0); o1.stop(t0 + dur + 0.05);
+  o2.start(t0); o2.stop(t0 + dur + 0.05);
+  o1.onended = () => { try { o1.disconnect(); o2.disconnect(); e1.disconnect(); e2.disconnect(); pan.disconnect(); } catch (e) {} };
 }
 // ======== PERCUSSION (synthesized, organic) ========
 function scheduleKick(when, vel = 0.7) {
@@ -669,7 +725,7 @@ function pickSection() {
   const r = state.prng();
   state.mood = r < 0.3 ? 'chatter' : r < 0.55 ? 'new' : r < 0.8 ? 'memory' : 'hush';
   document.body.className = 'awake mood-' + state.mood;
-  state.intensity = state.mood === 'hush' ? 0.38
+  state.intensity = state.mood === 'hush' ? 0.4
                   : state.mood === 'chatter' ? 0.78
                   : state.mood === 'memory' ? 0.55
                   : 0.86;
@@ -678,19 +734,22 @@ function pickSection() {
     const pool = pickSamplesForMood(state.mood);
     const lead = pool[Math.floor(state.prng() * pool.length)];
     let counter = pool[Math.floor(state.prng() * pool.length)];
-    // Try up to 4 times to get a distinct counter sample
     for (let k = 0; k < 4 && counter && lead && counter.id === lead.id && pool.length > 1; k++) {
       counter = pool[Math.floor(state.prng() * pool.length)];
     }
     state.melodyVoices.leadId = lead ? lead.id : null;
     state.melodyVoices.counterId = counter ? counter.id : null;
-    // Diatonic 3rd (2 scale steps) most of the time, 5th (4 steps) sometimes
     state.melodyVoices.counterOffset = state.prng() < 0.7 ? 2 : 4;
   }
+  // Rotate the backing instrument per section, weighted toward soft_pad.
+  const ir = state.prng();
+  state.currentInstrument = ir < 0.5 ? 'soft_pad' : ir < 0.85 ? 'flute' : 'glass';
 }
 function pickNewKey() {
-  // Favor pentatonic + major / minor; rarer modes show up occasionally.
-  const scaleWeights = [0.25, 0.2, 0.2, 0.15, 0.08, 0.08, 0.04];
+  // Heavily favour the pleasant scales. Lydian / mixolydian / dorian
+  // appear as fun exceptions, not the rule.
+  // Order matches SCALES: [maj-pent, min-pent, major, nat-min, dorian, mixolydian, lydian]
+  const scaleWeights = [0.32, 0.22, 0.28, 0.10, 0.04, 0.02, 0.02];
   let r = state.prng();
   let i = 0;
   for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
@@ -892,20 +951,19 @@ function scheduleStep(i, when) {
     }
   }
 
-  // --- COUNTER VOICE (faster filler, diatonic 3rd/5th above lead) ---
+  // --- COUNTER VOICE (medium filler, diatonic 3rd/5th above lead) ---
   const counterMeta = getVoiceSample('counter');
   if (counterMeta) {
-    let counterOn = false;
-    if (offbeat) counterOn = true;
-    else if (step % 2 === 1 && state.prng() < 0.32 + state.intensity * 0.45) counterOn = true;
-    else if (step === 1 && state.intensity > 0.55 && state.prng() < 0.4) counterOn = true;
+    const counterOn = offbeat
+      || (step === 6 && state.prng() < 0.6)
+      || (step === 14 && state.prng() < 0.6);
     if (counterOn) {
       const deg = state.melodyStep + state.melodyVoices.counterOffset
                 + (state.prng() < 0.2 ? (state.prng() < 0.5 ? -2 : 2) : 0);
       state.store.get(counterMeta.id).then(full => {
         if (!full) return;
-        const durMs = 400 + state.prng() * 520;
-        const vel = (offbeat ? 0.52 : 0.4) + state.prng() * 0.08;
+        const durMs = 380 + state.prng() * 520;
+        const vel = (offbeat ? 0.52 : 0.42) + state.prng() * 0.08;
         playNote(full, counterMeta, when, {
           degree: deg,
           vel,
@@ -917,32 +975,64 @@ function scheduleStep(i, when) {
     }
   }
 
-  // --- ARPEGGIOS: more frequent, can overlap, always in-key ---
-  // Primary arpeggio fires on bar boundaries with rising probability.
-  if (step === 0 && bar % 2 === 0) {
-    const arpProb = 0.32 + state.intensity * 0.35 + state.excitement * 0.45;
-    if (state.prng() < arpProb) {
-      const stepsBeats = state.excitement > 0.4 ? 8 : 4;
-      const baseDeg = [0, 0, 2, 4][Math.floor(state.prng() * 4)];
-      scheduleArpeggio(when + beatDuration() * 0.5, stepsBeats, baseDeg, 0.95);
-      // Overlap: sometimes spawn a second arp at a different start degree,
-      // delayed by 1-2 beats. Probability climbs with intensity / excitement.
-      const overlapProb = 0.25 + state.intensity * 0.3 + state.excitement * 0.45;
-      if (state.prng() < overlapProb) {
-        const offsetBeats = 1 + Math.floor(state.prng() * 2); // 1 or 2 beats later
-        const harmonyDeg = baseDeg + (state.prng() < 0.5 ? 2 : 4); // 3rd or 5th above
-        scheduleArpeggio(when + beatDuration() * (0.5 + offsetBeats), stepsBeats, harmonyDeg, 0.7);
-      }
-      // Triple overlap when really excited
-      if (state.excitement > 0.7 && state.prng() < 0.4) {
-        scheduleArpeggio(when + beatDuration() * 1.5, stepsBeats, baseDeg + 7, 0.55);
+  // --- 16TH FILL (random sample per note, very short, melody-walk pitched) ---
+  // This is what makes the melody feel constantly vocal. Each fill picks a
+  // random sample from the pool, so the timbre dances between recordings.
+  // We skip steps where the lead/counter already fired.
+  const isLeadStep = onBeat
+    || step === 6 || step === 10 || step === 14
+    || (step === 2 && state.intensity > 0.7);
+  const isCounterStep = offbeat || step === 6 || step === 14;
+  if (!isLeadStep && !isCounterStep) {
+    const fillProb = 0.55 + state.intensity * 0.3 + state.excitement * 0.2;
+    if (state.prng() < fillProb) {
+      const pool = pickSamplesForMood(state.mood);
+      const fillMeta = pool[Math.floor(state.prng() * pool.length)];
+      if (fillMeta) {
+        // Step around the melody walk by ±2 scale degrees so fills feel
+        // related to the lead but lively.
+        const deg = state.melodyStep + (state.prng() < 0.5 ? 0 : (state.prng() < 0.5 ? -2 : 2));
+        state.store.get(fillMeta.id).then(full => {
+          if (!full) return;
+          const durMs = 90 + state.prng() * 180; // very short pop clips
+          const vel = 0.35 + state.prng() * 0.18;
+          playNote(full, fillMeta, when, {
+            degree: deg,
+            vel,
+            durationMs: durMs,
+            layer: 'perf',
+            panOverride: (state.prng() * 2 - 1) * 0.85,
+          });
+        });
       }
     }
   }
-  // Mid-bar fill arpeggio when busy — short 4-beat run starting on beat 3
-  if (step === 8 && state.intensity > 0.7 && state.prng() < 0.3 + state.excitement * 0.3) {
+
+  // --- ARPEGGIOS: now fire two simultaneously by default for layered dancing.
+  if (step === 0 && bar % 2 === 0) {
+    const arpProb = 0.5 + state.intensity * 0.3 + state.excitement * 0.4;
+    if (state.prng() < arpProb) {
+      const stepsBeats = state.excitement > 0.4 ? 8 : 4;
+      const baseDeg = [0, 0, 2, 4][Math.floor(state.prng() * 4)];
+      // Two arps at the SAME instant, different start degrees, in-key.
+      scheduleArpeggio(when + beatDuration() * 0.25, stepsBeats, baseDeg, 0.92);
+      const harmonyDeg = baseDeg + (state.prng() < 0.55 ? 2 : 4); // 3rd or 5th
+      scheduleArpeggio(when + beatDuration() * 0.25, stepsBeats, harmonyDeg, 0.62);
+      // Third arp at the octave when excited
+      if (state.excitement > 0.55 && state.prng() < 0.55) {
+        scheduleArpeggio(when + beatDuration() * 0.25, stepsBeats, baseDeg + 7, 0.5);
+      }
+      // A staggered fourth voice can chase a beat behind (canon-ish)
+      if (state.intensity > 0.7 && state.prng() < 0.4) {
+        scheduleArpeggio(when + beatDuration() * 1.25, Math.max(2, stepsBeats - 2), baseDeg, 0.5);
+      }
+    }
+  }
+  // Mid-bar fill arpeggio when busy
+  if (step === 8 && state.intensity > 0.65 && state.prng() < 0.4 + state.excitement * 0.3) {
     const baseDeg = [0, 2, 4][Math.floor(state.prng() * 3)];
-    scheduleArpeggio(when, 4, baseDeg, 0.65);
+    scheduleArpeggio(when, 4, baseDeg, 0.6);
+    if (state.prng() < 0.5) scheduleArpeggio(when, 4, baseDeg + 4, 0.45);
   }
 
   // --- AMBIENT drone: root + fifth, sparse, kept quiet ---

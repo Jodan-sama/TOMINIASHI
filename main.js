@@ -699,6 +699,26 @@ function toAudioBuffer(rec) {
   }
   return buf;
 }
+// Lazily build and cache a time-reversed copy of the PCM so a grain can
+// literally play backward.  Web Audio's playbackRate can't go negative, so
+// we flip the Float32Array once per sample and cache the resulting buffer.
+function toReversedAudioBuffer(rec) {
+  if (!state.reverseBufferCache) state.reverseBufferCache = new Map();
+  const cached = state.reverseBufferCache.get(rec.id);
+  if (cached) return cached;
+  const src = rec.pcm;
+  const N = src.length;
+  const reversed = new Float32Array(N);
+  for (let i = 0; i < N; i++) reversed[i] = src[N - 1 - i];
+  const buf = state.ctx.createBuffer(1, N, rec.sampleRate);
+  buf.copyToChannel(reversed, 0);
+  state.reverseBufferCache.set(rec.id, buf);
+  if (state.reverseBufferCache.size > 24) {
+    const first = state.reverseBufferCache.keys().next().value;
+    state.reverseBufferCache.delete(first);
+  }
+  return buf;
+}
 function triggerGrain(rec, opts) {
   const ctx = state.ctx;
   const {
@@ -711,8 +731,15 @@ function triggerGrain(rec, opts) {
     delSend: delAmount = null,
     detuneCents = 0,
     when = null,           // schedule ahead (ctx.currentTime units)
+    reverse = null,        // explicit override; null => roll the dice below
   } = opts;
-  const buf = toAudioBuffer(rec);
+  // Reverse probability: older/more-mutated samples are more likely to
+  // surface in reverse (a quiet nod to the derivation path that already
+  // reverses 30% of child samples).  For fresh grains it's a rare spice
+  // (~6%); past mutation 0.5 we boost toward 15%.
+  const playReversed = reverse != null ? !!reverse
+    : Math.random() < (0.05 + Math.max(0, mutation - 0.3) * 0.2);
+  const buf = playReversed ? toReversedAudioBuffer(rec) : toAudioBuffer(rec);
   const src = ctx.createBufferSource();
   src.buffer = buf;
   src.playbackRate.value = rate;

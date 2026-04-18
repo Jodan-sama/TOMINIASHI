@@ -29,6 +29,9 @@ const state = {
   intensityBias: 0,
   scaleIndex: 0, scaleRoot: 0, melodyStep: 0, pendingKeyChange: false,
   mouse: { x: 0.5, y: 0.5, down: false, lastMoveAt: 0 },
+  // Real-time transposition driven by mouse X. Applied inside
+  // degreeToSemitones so every voice moves in parallel.
+  mouseSemitoneShift: 0,
   started: false, recording: false,
   bufferCache: new Map(),
   lastGrainAt: 0,
@@ -570,19 +573,28 @@ const SCALES = [
   { name: 'minor pentatonic', steps: [0, 3, 5, 7, 10] },
   { name: 'major',            steps: [0, 2, 4, 5, 7, 9, 11] },
   { name: 'natural minor',    steps: [0, 2, 3, 5, 7, 8, 10] },
+  { name: 'harmonic minor',   steps: [0, 2, 3, 5, 7, 8, 11] }, // raised 7 — cinematic minor
   { name: 'dorian',           steps: [0, 2, 3, 5, 7, 9, 10] },
   { name: 'mixolydian',       steps: [0, 2, 4, 5, 7, 9, 10] },
   { name: 'lydian',           steps: [0, 2, 4, 6, 7, 9, 11] },
 ];
-// Singer-friendly roots: C, D, F, G, A (and their minor equivalents).
-const NICE_ROOTS = [-12, -10, -7, -5, -3, 0, 2, 5, 7, 9];
+// Expanded set of singer-friendly pop-song roots spread across ~2 octaves.
+// Covers: C, D, Eb, E, F, F#, G, Ab, A, Bb (+ low octaves).
+const NICE_ROOTS = [
+  -12, -10, -9, -7, -5, -4, -3, -2,  // lower octave
+    0,   2,   3,   4,   5,   7,   8,   9,  10  // middle/upper octave
+];
 function scaleNow() { return SCALES[state.scaleIndex % SCALES.length]; }
 function degreeToSemitones(degree) {
   const sc = scaleNow();
   const len = sc.steps.length;
   const octave = Math.floor(degree / len);
   const idx = ((degree % len) + len) % len;
-  return sc.steps[idx] + octave * 12 + state.scaleRoot;
+  // Mouse X adds a real-time global key shift so every layer (vocals,
+  // melody line, arps) moves together when the user sweeps the mouse
+  // horizontally. Fractional semitones are fine — downstream rate math
+  // handles them smoothly.
+  return sc.steps[idx] + octave * 12 + state.scaleRoot + (state.mouseSemitoneShift || 0);
 }
 function rateForSemitones(st) { return Math.pow(2, st / 12); }
 function rateForDegree(degree) { return rateForSemitones(degreeToSemitones(degree)); }
@@ -1048,13 +1060,13 @@ function pickSection() {
     state.melodyVoices.counterId = counter ? counter.id : null;
     state.melodyVoices.counterOffset = state.prng() < 0.7 ? 2 : 4;
   }
-  // Rotate the backing instrument per section. Marimba leads the rotation
-  // now — woody + punchy + pop-friendly.  soft_pad is second for its
-  // blendable warmth. Flute and glass are the bright spice.
+  // Rotate the backing instrument per section. Marimba leads; soft_pad
+  // second; flute and glass appear sparingly so the mix doesn't get
+  // shrill.
   const ir = state.prng();
-  state.currentInstrument = ir < 0.45 ? 'marimba'
-                          : ir < 0.75 ? 'soft_pad'
-                          : ir < 0.92 ? 'flute'
+  state.currentInstrument = ir < 0.5  ? 'marimba'
+                          : ir < 0.85 ? 'soft_pad'
+                          : ir < 0.95 ? 'flute'
                           : 'glass';
   // New melody line for this section — the hook.
   pickMelodyLine();
@@ -1070,8 +1082,11 @@ function pickSection() {
 // partials on glass, vibrato sparkle on flute). Octave +1 on top of that
 // is piercing. Clamp them down; marimba and soft_pad have headroom.
 function safeOctaveForInstrument(inst, desired) {
-  if (inst === 'flute' || inst === 'glass') return Math.max(-2, Math.min(0, desired));
-  if (inst === 'marimba')                   return Math.max(-1, Math.min(1, desired));
+  // Flute + glass are bright at their native pitch.  Force them BELOW
+  // native (octave -1 max) so they sit as sweeteners rather than ice
+  // picks.  Marimba gets full range, soft_pad too.
+  if (inst === 'flute' || inst === 'glass') return Math.max(-2, Math.min(-1, desired));
+  if (inst === 'marimba')                   return Math.max(-2, Math.min(1, desired));
   return Math.max(-2, Math.min(1, desired)); // soft_pad
 }
 
@@ -1104,9 +1119,9 @@ function pickArps() {
   // Weighted instrument picker mirrors pickSection's bias toward marimba.
   const pickInst = () => {
     const r = state.prng();
-    if (r < 0.45) return 'marimba';
-    if (r < 0.72) return 'soft_pad';
-    if (r < 0.9)  return 'flute';
+    if (r < 0.5)  return 'marimba';
+    if (r < 0.85) return 'soft_pad';
+    if (r < 0.95) return 'flute';
     return 'glass';
   };
   const inst1 = pickInst();
@@ -1191,11 +1206,11 @@ function tickArps(i, when) {
 }
 
 function pickNewKey() {
-  // Pop structures: major is the spine, natural minor is the sad-pretty
-  // sibling, dorian/mixolydian are the interesting-but-still-catchy modes.
-  // Pentatonics get tiny weights — they're there as rare contrast.
-  // Order matches SCALES: [maj-pent, min-pent, major, nat-min, dorian, mixolydian, lydian]
-  const scaleWeights = [0.04, 0.03, 0.42, 0.25, 0.16, 0.07, 0.03];
+  // Order matches SCALES: [maj-pent, min-pent, major, nat-min, harm-min,
+  // dorian, mixolydian, lydian].  Majors + natural minor carry most of the
+  // weight; harmonic minor is the cinematic-minor spice; modes stay as
+  // occasional flavour.
+  const scaleWeights = [0.04, 0.04, 0.36, 0.28, 0.08, 0.12, 0.05, 0.03];
   let r = state.prng();
   let i = 0;
   for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
@@ -1215,9 +1230,10 @@ function playNote(full, meta, when, opts = {}) {
     panOverride = null,
     octaveBias = 0,       // shift up/down octaves (e.g. ambient uses -1 or -2)
   } = opts;
-  // Mouse X nudges the transposition but stays small enough that the key
-  // remains obvious.
-  const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 6);
+  // Mouse X is handled globally inside degreeToSemitones now (it shifts
+  // the current key by up to ±7 semitones in real time), so we don't
+  // double-transpose here.
+  const transposedDegree = degree;
   const dur = durationMs != null ? durationMs : 500 + state.prng() * 500;
   const clampedDur = Math.min(dur, Math.max(60, meta.durationMs - 20));
   const maxOffset = Math.max(0, meta.durationMs - clampedDur);
@@ -1437,6 +1453,9 @@ function scheduleStep(i, when) {
       || (step === 14 && state.prng() < 0.25);
     if (leadOn) {
       const deg = melodyDegThisStep != null ? melodyDegThisStep : state.melodyStep;
+      // Occasional octave jumps for vocal variety — 6% up, 6% down.
+      const r = state.prng();
+      const octaveBias = r < 0.06 ? 1 : r < 0.12 ? -1 : 0;
       state.store.get(leadMeta.id).then(full => {
         if (!full) return;
         const durMs = 700 + state.prng() * 1100;
@@ -1446,6 +1465,7 @@ function scheduleStep(i, when) {
           vel,
           durationMs: durMs,
           layer: 'perf',
+          octaveBias,
           panOverride: Math.sin(bar * 0.6) * 0.35 + (state.prng() * 2 - 1) * 0.15,
         });
       });
@@ -1461,6 +1481,8 @@ function scheduleStep(i, when) {
     if (counterOn) {
       const deg = state.melodyStep + state.melodyVoices.counterOffset
                 + (state.prng() < 0.2 ? (state.prng() < 0.5 ? -2 : 2) : 0);
+      const r = state.prng();
+      const octaveBias = r < 0.06 ? 1 : r < 0.12 ? -1 : 0;
       state.store.get(counterMeta.id).then(full => {
         if (!full) return;
         const durMs = 380 + state.prng() * 520;
@@ -1470,6 +1492,7 @@ function scheduleStep(i, when) {
           vel,
           durationMs: durMs,
           layer: 'perf',
+          octaveBias,
           panOverride: -Math.sin(bar * 0.6) * 0.5 + (state.prng() * 2 - 1) * 0.15,
         });
       });
@@ -1488,12 +1511,17 @@ function scheduleStep(i, when) {
     const fillMeta = pool[Math.floor(state.prng() * pool.length)];
     if (fillMeta) {
       const deg = state.melodyStep + (state.prng() < 0.5 ? 0 : (state.prng() < 0.5 ? -2 : 2));
+      // Fills leap octaves more freely — they're short pops, bigger
+      // intervals sound playful.
+      const r = state.prng();
+      const octaveBias = r < 0.15 ? 1 : r < 0.28 ? -1 : 0;
       state.store.get(fillMeta.id).then(full => {
         if (!full) return;
         const durMs = 90 + state.prng() * 140;
         const vel = 0.3 + state.prng() * 0.15;
         playNote(full, fillMeta, when, {
           degree: deg, vel, durationMs: durMs, layer: 'perf',
+          octaveBias,
           panOverride: (state.prng() * 2 - 1) * 0.85,
         });
       });
@@ -1577,8 +1605,13 @@ function initInput() {
   const driveFilter = () => {
     if (state.ctx) {
       const t = state.ctx.currentTime;
+      // Mouse X: global key shift, ±7 semitones (just over half an octave).
+      // Applied inside degreeToSemitones so the whole stack transposes in
+      // real time.  Smoothed with a first-order lag so tiny jitters don't
+      // cause audible pitch wobble on held notes.
+      const targetShift = (state.mouse.x - 0.5) * 14;
+      state.mouseSemitoneShift = state.mouseSemitoneShift * 0.85 + targetShift * 0.15;
       if (state.perfFilter) {
-        // Keep melody bright by default; mouse Y sweeps from smoky → open
         const base = 1800 + (1 - state.mouse.y) * 10000;
         const target = base * (0.9 + state.excitement * 0.3);
         try {
@@ -1590,12 +1623,18 @@ function initInput() {
         const amb = 300 + (1 - state.mouse.y) * 1400;
         try { state.ambFilter.frequency.setTargetAtTime(amb, t, 0.25); } catch (e) {}
       }
+      if (state.instFilter) {
+        // Mouse Y also sweeps the instrument bus filter so synth lines
+        // open/close together with the vocal bus.  800 Hz at the bottom,
+        // 4.5 kHz at the top.
+        const instTarget = 800 + (1 - state.mouse.y) * 3700;
+        try { state.instFilter.frequency.setTargetAtTime(instTarget, t, 0.2); } catch (e) {}
+      }
       if (state.drumBus) {
         const drumTarget = 0.28 + state.intensity * 0.3 + state.excitement * 0.2;
         try { state.drumBus.gain.setTargetAtTime(drumTarget, t, 0.3); } catch (e) {}
       }
       if (state.padBus) {
-        // Max 0.08 no matter what — rain never dominates.
         const padTarget = 0.035 + (1 - state.intensity) * 0.04;
         try { state.padBus.gain.setTargetAtTime(padTarget, t, 1.0); } catch (e) {}
       }

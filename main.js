@@ -17,13 +17,21 @@ const state = {
   started: false, recording: false,
   bufferCache: new Map(),
   lastGrainAt: 0,
-  transport: { bpm: 96, beatIndex: 0, startTime: 0, running: false, keyBar: 0 },
+  transport: { bpm: 110, beatIndex: 0, startTime: 0, running: false, keyBar: 0 },
   voices: { kick: true, click: true, shake: true, rain: true, arp: true },
   // Two melody voices share the current scale/root. Lead plays slow + held.
   // Counter plays faster + a diatonic 3rd or 5th above. Both switch together
   // whenever pickSection re-runs.
   melodyVoices: { leadId: null, counterId: null, counterOffset: 2 },
   currentInstrument: 'soft_pad',
+  // Three continuous arpeggiator voices. Each has its own pattern, step
+  // subdivision, octave offset, gate fraction, and assigned sample.
+  // Polyrhythm emerges from mismatched pattern lengths (e.g. 4-vs-6-vs-3).
+  arps: [
+    { pattern: [0, 4, 7, 4],     subdiv: 16, octave: 0, gate: 0.55, vel: 0.58, sampleId: null, idxOffset: 0 },
+    { pattern: [7, 4, 2, 4, 0, 2], subdiv: 16, octave: 0, gate: 0.5,  vel: 0.46, sampleId: null, idxOffset: 2 },
+    { pattern: [0, 7, 4],         subdiv: 16, octave: 1, gate: 0.35, vel: 0.4,  sampleId: null, idxOffset: 0 },
+  ],
 };
 const STEPS_PER_BAR = 16;
 const KEY_CHANGE_EVERY_BARS = 8;
@@ -744,7 +752,110 @@ function pickSection() {
   // Rotate the backing instrument per section, weighted toward soft_pad.
   const ir = state.prng();
   state.currentInstrument = ir < 0.5 ? 'soft_pad' : ir < 0.85 ? 'flute' : 'glass';
+  // Reassign the three continuous arpeggiator voices.
+  pickArps();
 }
+
+// Reassign all three arp voices: new patterns, subdivisions, octaves, samples.
+// Pattern *lengths* are picked to create polyrhythm (e.g. 4 vs 6 vs 3 steps
+// cycling at the same 16th subdivision produces a constantly reshuffling
+// hook). Subdivisions occasionally differ for a speedier counter-voice.
+function pickArps() {
+  if (!state.samples.length) return;
+  const pool = pickSamplesForMood(state.mood);
+  // Pre-pick three distinct samples when possible.
+  const pickOne = () => pool[Math.floor(state.prng() * pool.length)];
+  const s1 = pickOne();
+  let s2 = pickOne(); for (let k = 0; k < 4 && s2 && s1 && s2.id === s1.id && pool.length > 1; k++) s2 = pickOne();
+  let s3 = pickOne(); for (let k = 0; k < 4 && s3 && s2 && s3.id === s2.id && pool.length > 1; k++) s3 = pickOne();
+  // Subdivisions: most of the time voices 1+2 sit on 16ths, voice 3 flutters
+  // at 8ths or 32nds.  Occasionally voice 2 drops to 8ths for a slower counter.
+  const subdivChoice = state.prng();
+  const sub1 = 16;
+  const sub2 = subdivChoice < 0.25 ? 8 : 16;
+  const sub3 = subdivChoice < 0.4 ? 32 : subdivChoice < 0.8 ? 16 : 8;
+  // Octave stack: bass voice on 0, counter on 0 or -1, ornament on +1.
+  const oct2 = state.prng() < 0.3 ? -1 : 0;
+  const oct3 = state.prng() < 0.2 ? 2 : 1;
+  // Random pattern assignment.  Make sure at least one of the three is
+  // picked from the "poppy" first half of the library (most hook-friendly).
+  const poppyTop = Math.min(6, ARP_PATTERNS.length);
+  const pat1 = ARP_PATTERNS[Math.floor(state.prng() * poppyTop)];
+  const pat2 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
+  const pat3 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
+  state.arps = [
+    { pattern: pat1, subdiv: sub1, octave: 0,    gate: 0.55, vel: 0.58, sampleId: s1 ? s1.id : null, idxOffset: 0 },
+    { pattern: pat2, subdiv: sub2, octave: oct2, gate: 0.5,  vel: 0.46, sampleId: s2 ? s2.id : null, idxOffset: Math.floor(state.prng() * pat2.length) },
+    { pattern: pat3, subdiv: sub3, octave: oct3, gate: 0.35, vel: 0.4,  sampleId: s3 ? s3.id : null, idxOffset: Math.floor(state.prng() * pat3.length) },
+  ];
+}
+// Fire one arp voice at global 16th-step `i`.
+// subdiv=16 => one note per 16th. subdiv=8 => every other 16th.
+// subdiv=32 => two notes per 16th (on the 16th + the half).
+function fireArpVoice(voice, voiceIdx, i, when) {
+  if (!voice || !voice.pattern || !voice.pattern.length) return;
+  const pool = state.samples;
+  if (!pool.length) return;
+  let meta = voice.sampleId ? pool.find(s => s.id === voice.sampleId) : null;
+  if (!meta) meta = pool[Math.floor(state.prng() * pool.length)];
+  if (!meta) return;
+
+  const sixteenth = beatDuration() / 4;
+
+  // Decide the sub-events this 16th-step produces for this voice.
+  // events[] holds { when, patIdx } pairs.
+  const events = [];
+  if (voice.subdiv === 32) {
+    events.push({ when: when,                      patIdx: (voice.idxOffset + i * 2) });
+    events.push({ when: when + sixteenth * 0.5,    patIdx: (voice.idxOffset + i * 2 + 1) });
+  } else if (voice.subdiv === 16) {
+    events.push({ when: when, patIdx: (voice.idxOffset + i) });
+  } else if (voice.subdiv === 8) {
+    if (i % 2 !== 0) return;
+    events.push({ when: when, patIdx: (voice.idxOffset + i / 2) });
+  } else {
+    return;
+  }
+
+  // Stereo placement per voice so the three arps sit in different parts of
+  // the field. Voice 0 = center, voice 1 = left, voice 2 = right.
+  const basePan = voiceIdx === 1 ? -0.55 : voiceIdx === 2 ? 0.55 : 0;
+  const restProb = voice.restProb || (voiceIdx === 2 ? 0.28 : voiceIdx === 1 ? 0.15 : 0.08);
+
+  state.store.get(meta.id).then(full => {
+    if (!full) return;
+    for (const ev of events) {
+      // Rest: skip this note entirely, leaving a gap for breath.
+      if (state.prng() < restProb) continue;
+      const patLen = voice.pattern.length;
+      const idx = ((Math.floor(ev.patIdx) % patLen) + patLen) % patLen;
+      const deg = voice.pattern[idx] + voice.octave * 7;
+      // Short grains so fast arps stay articulate and don't mud up.
+      const maxDurMs = voice.subdiv === 32 ? 120 : voice.subdiv === 16 ? 240 : 420;
+      const durMs = Math.min((sixteenth * 1000) * voice.gate * (voice.subdiv === 32 ? 0.5 : 1), maxDurMs);
+      // Accent pattern: downbeat loudest, off-beats softer — gives the line
+      // a pulse even when the notes themselves repeat.
+      const accent = (i % 4 === 0) ? 1.0 : (i % 2 === 0) ? 0.88 : 0.78;
+      const vel = voice.vel * accent * (0.85 + state.prng() * 0.2)
+                * (1 + state.excitement * 0.1);
+      playNote(full, meta, ev.when, {
+        degree: deg,
+        vel,
+        durationMs: durMs,
+        layer: 'event',
+        panOverride: basePan + (state.prng() * 2 - 1) * 0.25,
+      });
+    }
+  });
+}
+
+function tickArps(i, when) {
+  if (!state.samples.length || !state.arps) return;
+  for (let v = 0; v < state.arps.length; v++) {
+    fireArpVoice(state.arps[v], v, i, when);
+  }
+}
+
 function pickNewKey() {
   // Heavily favour the pleasant scales. Lydian / mixolydian / dorian
   // appear as fun exceptions, not the rule.
@@ -790,16 +901,23 @@ function playNote(full, meta, when, opts = {}) {
   meta.lastPlayedAt = Date.now();
 }
 
-// Arpeggio patterns expressed as scale degrees. Built from triads and
-// seventh chords so they always land inside the current key.
+// Arpeggio pattern library — pop-pleasing shapes expressed as scale degrees.
+// Mostly triads + seventh voicings with some octave leaps and descending
+// hooks. Patterns of different lengths produce polyrhythmic overlap when
+// assigned to different arp voices at the same subdivision.
 const ARP_PATTERNS = [
-  [0, 2, 4, 7, 4, 2],           // ascending triad + seventh + back
-  [0, 2, 4, 2],                 // lilt on a triad
-  [0, 4, 2, 4],                 // alberti-ish
-  [7, 4, 2, 0, 2, 4],           // descend + return
-  [0, 2, 4, 6, 4, 2],           // diatonic seventh
-  [0, 2, 4, 7, 9, 7, 4, 2],     // broad eight-note climb/fall
-  [0, 4, 7, 4, 2, 4],           // spread voicing
+  [0, 4, 7, 4],                 // root-3rd-5th-3rd  (classic pop arp)
+  [0, 2, 4, 7, 4, 2],           // ascending + return
+  [0, 4, 7, 9, 7, 4],           // reach to the 6
+  [7, 4, 2, 0, 2, 4],           // descend and return
+  [0, 7, 4, 7],                 // bouncing root-octave-3rd
+  [0, 2, 4, 5, 4, 2],           // stepwise lilt
+  [0, 4, 2, 7, 4, 9],           // zig-zag with leaps
+  [0, 4, 7, 4, 9, 4, 7, 4],     // pivoting on the 3rd
+  [0, 7, 0, 4, 0, 7, 0, 9],     // bass-pedal with upper voice
+  [4, 7, 9, 7, 4, 2],           // circling a high cluster
+  [0, 2, 4, 2, 0, -3],          // drop to the 6 below
+  [0, 11, 7, 4, 2, 4],          // leading tone pulled down home
 ];
 
 function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 1) {
@@ -975,65 +1093,35 @@ function scheduleStep(i, when) {
     }
   }
 
-  // --- 16TH FILL (random sample per note, very short, melody-walk pitched) ---
-  // This is what makes the melody feel constantly vocal. Each fill picks a
-  // random sample from the pool, so the timbre dances between recordings.
-  // We skip steps where the lead/counter already fired.
+  // The 16th-fill layer is redundant now that three arp voices are always
+  // running. Keep a very sparse one for variety — random short pops that
+  // sit between the arps without fighting them.
   const isLeadStep = onBeat
     || step === 6 || step === 10 || step === 14
     || (step === 2 && state.intensity > 0.7);
   const isCounterStep = offbeat || step === 6 || step === 14;
-  if (!isLeadStep && !isCounterStep) {
-    const fillProb = 0.55 + state.intensity * 0.3 + state.excitement * 0.2;
-    if (state.prng() < fillProb) {
-      const pool = pickSamplesForMood(state.mood);
-      const fillMeta = pool[Math.floor(state.prng() * pool.length)];
-      if (fillMeta) {
-        // Step around the melody walk by ±2 scale degrees so fills feel
-        // related to the lead but lively.
-        const deg = state.melodyStep + (state.prng() < 0.5 ? 0 : (state.prng() < 0.5 ? -2 : 2));
-        state.store.get(fillMeta.id).then(full => {
-          if (!full) return;
-          const durMs = 90 + state.prng() * 180; // very short pop clips
-          const vel = 0.35 + state.prng() * 0.18;
-          playNote(full, fillMeta, when, {
-            degree: deg,
-            vel,
-            durationMs: durMs,
-            layer: 'perf',
-            panOverride: (state.prng() * 2 - 1) * 0.85,
-          });
+  if (!isLeadStep && !isCounterStep && state.prng() < 0.12) {
+    const pool = pickSamplesForMood(state.mood);
+    const fillMeta = pool[Math.floor(state.prng() * pool.length)];
+    if (fillMeta) {
+      const deg = state.melodyStep + (state.prng() < 0.5 ? 0 : (state.prng() < 0.5 ? -2 : 2));
+      state.store.get(fillMeta.id).then(full => {
+        if (!full) return;
+        const durMs = 90 + state.prng() * 140;
+        const vel = 0.3 + state.prng() * 0.15;
+        playNote(full, fillMeta, when, {
+          degree: deg, vel, durationMs: durMs, layer: 'perf',
+          panOverride: (state.prng() * 2 - 1) * 0.85,
         });
-      }
+      });
     }
   }
 
-  // --- ARPEGGIOS: now fire two simultaneously by default for layered dancing.
-  if (step === 0 && bar % 2 === 0) {
-    const arpProb = 0.5 + state.intensity * 0.3 + state.excitement * 0.4;
-    if (state.prng() < arpProb) {
-      const stepsBeats = state.excitement > 0.4 ? 8 : 4;
-      const baseDeg = [0, 0, 2, 4][Math.floor(state.prng() * 4)];
-      // Two arps at the SAME instant, different start degrees, in-key.
-      scheduleArpeggio(when + beatDuration() * 0.25, stepsBeats, baseDeg, 0.92);
-      const harmonyDeg = baseDeg + (state.prng() < 0.55 ? 2 : 4); // 3rd or 5th
-      scheduleArpeggio(when + beatDuration() * 0.25, stepsBeats, harmonyDeg, 0.62);
-      // Third arp at the octave when excited
-      if (state.excitement > 0.55 && state.prng() < 0.55) {
-        scheduleArpeggio(when + beatDuration() * 0.25, stepsBeats, baseDeg + 7, 0.5);
-      }
-      // A staggered fourth voice can chase a beat behind (canon-ish)
-      if (state.intensity > 0.7 && state.prng() < 0.4) {
-        scheduleArpeggio(when + beatDuration() * 1.25, Math.max(2, stepsBeats - 2), baseDeg, 0.5);
-      }
-    }
-  }
-  // Mid-bar fill arpeggio when busy
-  if (step === 8 && state.intensity > 0.65 && state.prng() < 0.4 + state.excitement * 0.3) {
-    const baseDeg = [0, 2, 4][Math.floor(state.prng() * 3)];
-    scheduleArpeggio(when, 4, baseDeg, 0.6);
-    if (state.prng() < 0.5) scheduleArpeggio(when, 4, baseDeg + 4, 0.45);
-  }
+  // --- CONTINUOUS ARP VOICES ---
+  // Three always-on arpeggiators with independent patterns + subdivisions.
+  // Polyrhythm arises naturally: a 4-step pattern and a 6-step pattern
+  // cycling at 16ths realign every 12 steps, so the hook keeps reshuffling.
+  tickArps(i, when);
 
   // --- AMBIENT drone: root + fifth, sparse, kept quiet ---
   if (step === 0 && bar % 4 === 0) {
@@ -1072,7 +1160,9 @@ function excite() {
   state.transport.bpm = Math.min(160, state.transport.bpm + 6);
   state.intensity = Math.min(1, state.intensity + 0.18);
   state.excitement = Math.min(1, state.excitement + 0.55);
-  // trigger an immediate arpeggio at next beat
+  // Reshuffle the three arp voices so the hook transforms immediately.
+  pickArps();
+  // One-shot burst arp over the top for a rush.
   const nextBeatWhen = state.ctx ? state.ctx.currentTime + 0.05 : 0;
   if (state.samples.length && state.ctx) scheduleArpeggio(nextBeatWhen, 8, 0, 1);
 }

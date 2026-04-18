@@ -1034,34 +1034,48 @@ function pickSection() {
 // Pattern *lengths* are picked to create polyrhythm (e.g. 4 vs 6 vs 3 steps
 // cycling at the same 16th subdivision produces a constantly reshuffling
 // hook). Subdivisions occasionally differ for a speedier counter-voice.
+// Flute and glass sit at an A4 reference and get very bright (inharmonic
+// partials on glass, vibrato sparkle on flute). Octave +1 on top of that
+// is piercing. Clamp them down; marimba and soft_pad have headroom.
+function safeOctaveForInstrument(inst, desired) {
+  if (inst === 'flute' || inst === 'glass') return Math.max(-2, Math.min(0, desired));
+  if (inst === 'marimba')                   return Math.max(-1, Math.min(1, desired));
+  return Math.max(-2, Math.min(1, desired)); // soft_pad
+}
+
 function pickArps() {
-  // Arps run on INSTRUMENTS now — no sample dependency. Always repopulate
-  // on pickSection so the hook morphs.
   const subdivChoice = state.prng();
   const sub1 = 16;
   const sub2 = subdivChoice < 0.25 ? 8 : 16;
   const sub3 = subdivChoice < 0.4 ? 32 : subdivChoice < 0.8 ? 16 : 8;
-  const oct2 = state.prng() < 0.3 ? -1 : 0;
-  const oct3 = state.prng() < 0.2 ? 2 : 1;
+  const oct2Desired = state.prng() < 0.3 ? -1 : 0;
+  // Ornament voice wants to sit higher. We'll clamp per-instrument below.
+  const oct3Desired = state.prng() < 0.2 ? 2 : 1;
   const poppyTop = Math.min(6, ARP_PATTERNS.length);
   const pat1 = ARP_PATTERNS[Math.floor(state.prng() * poppyTop)];
   const pat2 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
   const pat3 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
-  // Each voice picks its own instrument per section so you get three
-  // distinct timbres layered (e.g. glass root + marimba counter + flute
-  // ornament).  Shuffle INSTRUMENTS and take the first three so voices
-  // don't collide on the same timbre.
+  // Voice 0 is a VOCAL arp (uses a sample grain, routed through playNote).
+  // Voices 1 and 2 are instrument synths, each picking a distinct timbre.
+  const vocalSample = state.samples.length
+    ? pickSamplesForMood(state.mood)[Math.floor(state.prng() * Math.max(1, pickSamplesForMood(state.mood).length))]
+    : null;
   const shuffled = INSTRUMENTS.slice().sort(() => state.prng() - 0.5);
+  const inst1 = shuffled[0];
+  const inst2 = shuffled[1] || shuffled[0];
   state.arps = [
-    { pattern: pat1, subdiv: sub1, octave: 0,    gate: 0.55, vel: 0.5,  instrument: shuffled[0], idxOffset: 0 },
-    { pattern: pat2, subdiv: sub2, octave: oct2, gate: 0.5,  vel: 0.42, instrument: shuffled[1], idxOffset: Math.floor(state.prng() * pat2.length) },
-    { pattern: pat3, subdiv: sub3, octave: oct3, gate: 0.35, vel: 0.34, instrument: shuffled[2] || shuffled[0], idxOffset: Math.floor(state.prng() * pat3.length) },
+    // Voice 0 — vocal grain arpeggio, center pan, held slightly longer.
+    { pattern: pat1, subdiv: sub1, octave: 0,   gate: 0.55, vel: 0.48, sampleId: vocalSample ? vocalSample.id : null, idxOffset: 0 },
+    // Voice 1 — instrument counter, left pan.
+    { pattern: pat2, subdiv: sub2, octave: safeOctaveForInstrument(inst1, oct2Desired), gate: 0.5,  vel: 0.42, instrument: inst1, idxOffset: Math.floor(state.prng() * pat2.length) },
+    // Voice 2 — instrument ornament, right pan, highest register the
+    // instrument safely allows (flute/glass capped at octave 0).
+    { pattern: pat3, subdiv: sub3, octave: safeOctaveForInstrument(inst2, oct3Desired), gate: 0.35, vel: 0.34, instrument: inst2, idxOffset: Math.floor(state.prng() * pat3.length) },
   ];
 }
-// Fire one arp voice at global 16th-step `i`. Plays via the instrument
-// synth (not vocal samples) so multiple arp voices stack cleanly without
-// loud-sample dominance.  subdiv=16 => one note per 16th. subdiv=8 =>
-// every other 16th. subdiv=32 => two notes per 16th.
+// Fire one arp voice. If voice.sampleId is set, plays a vocal-sample grain
+// via playNote; otherwise plays the assigned instrument synth. subdiv=16
+// => one note per 16th, 8 => every other, 32 => two per 16th.
 function fireArpVoice(voice, voiceIdx, i, when) {
   if (!voice || !voice.pattern || !voice.pattern.length) return;
   const sixteenth = beatDuration() / 4;
@@ -1081,21 +1095,43 @@ function fireArpVoice(voice, voiceIdx, i, when) {
                  : voiceIdx === 2 ? 0.32
                  : voiceIdx === 1 ? 0.18
                  : 0.1;
-  for (const ev of events) {
-    if (state.prng() < restProb) continue;
-    const patLen = voice.pattern.length;
-    const idx = ((Math.floor(ev.patIdx) % patLen) + patLen) % patLen;
-    const deg = voice.pattern[idx];
-    const maxDurMs = voice.subdiv === 32 ? 110 : voice.subdiv === 16 ? 220 : 380;
-    const durMs = Math.min((sixteenth * 1000) * voice.gate * (voice.subdiv === 32 ? 0.5 : 1), maxDurMs);
-    const accent = (i % 4 === 0) ? 1.0 : (i % 2 === 0) ? 0.88 : 0.78;
-    const vel = voice.vel * accent * (0.85 + state.prng() * 0.2) * (1 + state.excitement * 0.08);
-    // Pitch: scale-degree -> semitones (honours current key + root), plus a
-    // direct semitone octave offset for the voice.  Instruments have their
-    // own reference pitch (A3/A4/E4) so semis=0 is naturally middle.
-    const semis = degreeToSemitones(deg) + voice.octave * 12;
-    scheduleInstrumentNote(ev.when, semis, durMs, vel, voice.instrument);
+  const isVocal = !!voice.sampleId;
+  // For vocal voices, resolve the sample once per fire and kick off a single
+  // store fetch for all sub-events. For synth voices we schedule directly.
+  let vocalMeta = null;
+  if (isVocal) {
+    vocalMeta = state.samples.find(s => s.id === voice.sampleId);
+    if (!vocalMeta) vocalMeta = pickSample(state.samples);
+    if (!vocalMeta) return;
   }
+  const firePromise = isVocal ? state.store.get(vocalMeta.id).catch(() => null) : Promise.resolve(null);
+  const basePan = voiceIdx === 1 ? -0.55 : voiceIdx === 2 ? 0.55 : 0;
+  firePromise.then(full => {
+    for (const ev of events) {
+      if (state.prng() < restProb) continue;
+      const patLen = voice.pattern.length;
+      const idx = ((Math.floor(ev.patIdx) % patLen) + patLen) % patLen;
+      const deg = voice.pattern[idx];
+      const maxDurMs = voice.subdiv === 32 ? 110 : voice.subdiv === 16 ? 220 : 380;
+      const durMs = Math.min((sixteenth * 1000) * voice.gate * (voice.subdiv === 32 ? 0.5 : 1), maxDurMs);
+      const accent = (i % 4 === 0) ? 1.0 : (i % 2 === 0) ? 0.88 : 0.78;
+      const vel = voice.vel * accent * (0.85 + state.prng() * 0.2) * (1 + state.excitement * 0.08);
+      if (isVocal && full) {
+        // Vocal grain: use pitch-aware playNote so it tracks the current
+        // scale. Short grain so fast arps stay articulate.
+        playNote(full, vocalMeta, ev.when, {
+          degree: deg + voice.octave * 7,
+          vel,
+          durationMs: durMs,
+          layer: 'event',
+          panOverride: basePan + (state.prng() * 2 - 1) * 0.2,
+        });
+      } else if (voice.instrument) {
+        const semis = degreeToSemitones(deg) + voice.octave * 12;
+        scheduleInstrumentNote(ev.when, semis, durMs, vel, voice.instrument);
+      }
+    }
+  });
 }
 
 function tickArps(i, when) {

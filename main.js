@@ -1,2166 +1,688 @@
-// ============================================================
-// TOMI NIASHI  /  トミ ニアシ
-// Breathing instruments. Every pixel is dynamic.
-// ============================================================
+// TOMI NIASHI — breathing synthesizer simulator
+// Sections: prng, genome, store, audio, recorder, voice, evolver, scheduler, input, viz, ui, boot
 
-import * as THREE from "three";
-import { FontLoader } from "three/addons/loaders/FontLoader.js";
-import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+const DB_NAME = 'tominiashi_synth';
+const DB_STORE = 'samples';
+const LS_GENOME = 'tn_genome_v1';
 
-// -----------------------------------------------------------
-// State
-// -----------------------------------------------------------
 const state = {
-  mouse: { x: -9999, y: -9999, nx: 0, ny: 0, vx: 0, vy: 0, px: 0, py: 0 },
-  scroll: 0,
-  time: 0,
-  hovered: null,
-  openProduct: null,
-  width: window.innerWidth,
-  height: window.innerHeight,
-  dpr: Math.min(window.devicePixelRatio, 2),
+  ctx: null, master: null, revSend: null, delSend: null, analyser: null, analyserData: null,
+  genome: null, store: null, samples: [],
+  prng: Math.random,
+  mood: 'hush', awake: false, awakeUntil: 0, nextWakeAt: 0, lastEvolveAt: 0,
+  mouse: { x: 0.5, y: 0.5, down: false },
+  started: false, recording: false,
+  bufferCache: new Map(),
 };
 
-// -----------------------------------------------------------
-// Product data
-// -----------------------------------------------------------
-const PRODUCTS = [
-  {
-    id: 0,
-    num: "01",
-    name: "NEBULA SPHERE",
-    kana: "ネビュラ・スフィア",
-    price: "$4,200",
-    priceYen: "¥ 620,000",
-    desc: "A blown glass icosasphere enclosing roughly 180ml of circulating orange plasma. The plasma pulse is driven by the ambient capacitive field of whoever sits within one metre of the instrument. Slow, soft, continuous drone. Unique per person.",
-    specs: [
-      ["VESSEL", "BOROSILICATE / Ø 22cm"],
-      ["PLASMA", "TN-ORANGE 14 / 180ml"],
-      ["OUTPUT", "STEREO 6.3mm / BLUETOOTH"],
-      ["WEIGHT", "3.4 kg"],
-      ["RANGE", "40 Hz – 12 kHz"],
-      ["TUNING", "HAND · PER UNIT"],
-    ],
-    accent: "#FF4500",
-  },
-  {
-    id: 1,
-    num: "02",
-    name: "RESONANT PILLAR",
-    kana: "レゾナント・ピラー",
-    price: "$6,800",
-    priceYen: "¥ 980,000",
-    desc: "A 1.2-metre column of twisted, fluted glass fed from below by a peristaltic plasma pump. As the orange fluid climbs the twist, contact microphones along the spine pick up its resonant modes and synthesise them in real time.",
-    specs: [
-      ["HEIGHT", "120 cm"],
-      ["PLASMA", "TN-ORANGE 14 / 720ml"],
-      ["OUTPUT", "QUAD 6.3mm · MIDI"],
-      ["WEIGHT", "14 kg"],
-      ["RANGE", "22 Hz – 18 kHz"],
-      ["TUNING", "HAND · PER UNIT"],
-    ],
-    accent: "#FF4500",
-  },
-  {
-    id: 2,
-    num: "03",
-    name: "ORBITAL FLUX",
-    kana: "オービタル・フラックス",
-    price: "$3,400",
-    priceYen: "¥ 498,000",
-    desc: "A hollow glass torus with a single drop of concentrated plasma orbiting inside. The drop's position modulates a self-playing FM voice. Lay on its side, hang from ceiling, or set it spinning — it will generate music until you stop it.",
-    specs: [
-      ["DIAMETER", "38 cm"],
-      ["PLASMA", "TN-ORANGE 19 / 12ml"],
-      ["OUTPUT", "STEREO 3.5mm"],
-      ["WEIGHT", "1.9 kg"],
-      ["RANGE", "60 Hz – 16 kHz"],
-      ["TUNING", "HAND · PER UNIT"],
-    ],
-    accent: "#FF4500",
-  },
-  {
-    id: 3,
-    num: "04",
-    name: "VERTEBRAE SYNTH",
-    kana: "バーテブレ・シンセ",
-    price: "$9,200",
-    priceYen: "¥ 1,340,000",
-    desc: "Seven articulated glass vertebrae, each holding its own plasma nucleus. The spine undulates under servo control, driven by the music it produces. The result is an instrument that dances while it sings. Each vertebra is independently tunable.",
-    specs: [
-      ["LENGTH", "85 cm (ext.)"],
-      ["VERTEBRAE", "7 · MODULAR"],
-      ["OUTPUT", "7× MONO · MIDI"],
-      ["WEIGHT", "7.1 kg"],
-      ["RANGE", "30 Hz – 19 kHz"],
-      ["TUNING", "HAND · PER UNIT"],
-    ],
-    accent: "#FF4500",
-  },
-];
-
-// -----------------------------------------------------------
-// Main renderer & scene
-// -----------------------------------------------------------
-const sceneCanvas = document.getElementById("scene-canvas");
-const renderer = new THREE.WebGLRenderer({
-  canvas: sceneCanvas,
-  alpha: true,
-  antialias: true,
-  premultipliedAlpha: false,
-});
-renderer.setPixelRatio(state.dpr);
-renderer.setSize(state.width, state.height);
-renderer.setClearColor(0x000000, 0);
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(
-  35,
-  state.width / state.height,
-  0.1,
-  100
-);
-camera.position.set(0, 0, 12);
-
-// Lights
-const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
-keyLight.position.set(5, 5, 5);
-scene.add(keyLight);
-
-const fillLight = new THREE.DirectionalLight(0xffccaa, 0.5);
-fillLight.position.set(-4, 2, 3);
-scene.add(fillLight);
-
-const rimLight = new THREE.DirectionalLight(0xff5522, 0.4);
-rimLight.position.set(0, -5, -2);
-scene.add(rimLight);
-
-scene.add(new THREE.AmbientLight(0xffffff, 0.4));
-
-// -----------------------------------------------------------
-// Environment map (for reflective 3D text materials).
-// PMREM-filtered RoomEnvironment gives soft, studio-like reflections.
-// We only apply it to the explicit text materials — product shaders
-// are custom GLSL and ignore scene.environment.
-// -----------------------------------------------------------
-const pmremGenerator = new THREE.PMREMGenerator(renderer);
-pmremGenerator.compileEquirectangularShader();
-const envTexture = pmremGenerator.fromScene(
-  new RoomEnvironment(),
-  0.04
-).texture;
-pmremGenerator.dispose();
-
-// Chrome / polished-metal for BREATHING + INSTRUMENTS
-const chromeMat = new THREE.MeshPhysicalMaterial({
-  color: 0xf2eee6,
-  metalness: 1.0,
-  roughness: 0.12,
-  envMap: envTexture,
-  envMapIntensity: 1.7,
-  clearcoat: 0.7,
-  clearcoatRoughness: 0.08,
-});
-
-// Softer ink for FROM (secondary line)
-const inkTextMat = new THREE.MeshPhysicalMaterial({
-  color: 0x4a4a48,
-  metalness: 0.9,
-  roughness: 0.28,
-  envMap: envTexture,
-  envMapIntensity: 1.1,
-  clearcoat: 0.4,
-});
-
-// Bright orange plasma for LIQUID (+ every other marquee pass)
-const orangeTextMat = new THREE.MeshPhysicalMaterial({
-  color: 0xff4500,
-  metalness: 0.3,
-  roughness: 0.18,
-  envMap: envTexture,
-  envMapIntensity: 1.6,
-  clearcoat: 1.0,
-  clearcoatRoughness: 0.06,
-  emissive: 0xff2200,
-  emissiveIntensity: 0.25,
-});
-
-// -----------------------------------------------------------
-// Background shader (separate canvas, orthographic, fullscreen quad)
-// -----------------------------------------------------------
-const bgCanvas = document.getElementById("bg-canvas");
-const bgRenderer = new THREE.WebGLRenderer({
-  canvas: bgCanvas,
-  antialias: false,
-});
-bgRenderer.setPixelRatio(state.dpr);
-bgRenderer.setSize(state.width, state.height);
-
-const bgScene = new THREE.Scene();
-const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-
-const bgUniforms = {
-  uTime: { value: 0 },
-  uRes: { value: new THREE.Vector2(state.width, state.height) },
-  uMouse: { value: new THREE.Vector2(0, 0) },
-  uScroll: { value: 0 },
-};
-
-const bgMaterial = new THREE.ShaderMaterial({
-  uniforms: bgUniforms,
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */ `
-    precision highp float;
-    varying vec2 vUv;
-    uniform float uTime;
-    uniform vec2  uRes;
-    uniform vec2  uMouse;
-    uniform float uScroll;
-
-    // -------------------------------------------------------
-    // Hash / noise
-    // -------------------------------------------------------
-    vec2 hash2(vec2 p) {
-      p = vec2(dot(p, vec2(127.1, 311.7)),
-               dot(p, vec2(269.5, 183.3)));
-      return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
-    }
-    float noise(vec2 p) {
-      vec2 i = floor(p);
-      vec2 f = fract(p);
-      vec2 u = f * f * (3.0 - 2.0 * f);
-      return mix(
-        mix(dot(hash2(i + vec2(0,0)), f - vec2(0,0)),
-            dot(hash2(i + vec2(1,0)), f - vec2(1,0)), u.x),
-        mix(dot(hash2(i + vec2(0,1)), f - vec2(0,1)),
-            dot(hash2(i + vec2(1,1)), f - vec2(1,1)), u.x),
-        u.y);
-    }
-
-    // -------------------------------------------------------
-    // Line grid — warps toward mouse, breathes with time
-    // -------------------------------------------------------
-    float gridLines(vec2 uv, float scale, float width) {
-      vec2 g = fract(uv * scale) - 0.5;
-      float d = min(abs(g.x), abs(g.y));
-      return 1.0 - smoothstep(0.0, width, d);
-    }
-
-    void main() {
-      vec2 uv = vUv;
-      float aspect = uRes.x / uRes.y;
-      vec2 auv = uv;
-      auv.x *= aspect;
-
-      vec2 m = uMouse;
-      m.x *= aspect;
-
-      // Mouse-based radial pull
-      vec2 toMouse = m - auv;
-      float dMouse = length(toMouse);
-      float pull = smoothstep(0.8, 0.0, dMouse) * 0.035;
-      auv += normalize(toMouse + 1e-5) * pull;
-
-      // Slow flow field to warp UV for lines
-      float n1 = noise(auv * 1.2 + uTime * 0.05);
-      float n2 = noise(auv * 1.2 - uTime * 0.04 + 13.0);
-      vec2 warp = vec2(n1, n2) * 0.08;
-      vec2 lineUv = auv + warp;
-      lineUv.y += uScroll * 0.00025;
-
-      // Two line scales layered
-      float gridA = gridLines(lineUv, 28.0, 0.012);
-      float gridB = gridLines(lineUv + 0.25, 7.0,  0.004);
-
-      // Fine horizontal scan lines
-      float scan = 0.5 + 0.5 * sin(uv.y * uRes.y * 0.7 + uTime * 1.5);
-      scan = pow(scan, 40.0);
-
-      // Noise flicker
-      float flk = noise(uv * 800.0 + uTime * 80.0) * 0.04;
-
-      // Base tone — warm bone
-      vec3 base = vec3(0.925, 0.918, 0.894);
-      // Slight vertical gradient
-      base -= vec3(0.02) * uv.y;
-
-      // Dark grey line colour
-      vec3 lineCol = vec3(0.07, 0.07, 0.07);
-
-      // Ink the lines in
-      vec3 col = mix(base, lineCol, gridA * 0.55);
-      col     = mix(col,  lineCol, gridB * 0.22);
-
-      // Mouse bleed — subtle orange glow
-      float bleed = smoothstep(0.5, 0.0, dMouse);
-      col = mix(col, vec3(1.0, 0.27, 0.0), bleed * 0.08);
-
-      // Bright orange hot dot right at cursor
-      float hot = smoothstep(0.04, 0.0, dMouse);
-      col = mix(col, vec3(1.0, 0.42, 0.12), hot * 0.35);
-
-      // Scan line
-      col -= vec3(0.04) * scan;
-
-      // Noise grain
-      col += vec3(flk);
-
-      // Vignette
-      vec2 vv = uv - 0.5;
-      float vig = 1.0 - dot(vv, vv) * 0.6;
-      col *= vig;
-
-      gl_FragColor = vec4(col, 1.0);
-    }
-  `,
-});
-
-const bgQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMaterial);
-bgScene.add(bgQuad);
-
-// -----------------------------------------------------------
-// Shared noise GLSL for reuse
-// -----------------------------------------------------------
-const GLSL_NOISE = /* glsl */ `
-  vec3 mod289(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
-  vec4 mod289(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
-  vec4 permute(vec4 x){ return mod289(((x*34.0)+1.0)*x); }
-  vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
-  float snoise(vec3 v) {
-    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
-    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
-    vec3 i  = floor(v + dot(v, C.yyy));
-    vec3 x0 = v - i + dot(i, C.xxx);
-    vec3 g = step(x0.yzx, x0.xyz);
-    vec3 l = 1.0 - g;
-    vec3 i1 = min(g.xyz, l.zxy);
-    vec3 i2 = max(g.xyz, l.zxy);
-    vec3 x1 = x0 - i1 + C.xxx;
-    vec3 x2 = x0 - i2 + C.yyy;
-    vec3 x3 = x0 - D.yyy;
-    i = mod289(i);
-    vec4 p = permute(permute(permute(
-              i.z + vec4(0.0, i1.z, i2.z, 1.0))
-            + i.y + vec4(0.0, i1.y, i2.y, 1.0))
-            + i.x + vec4(0.0, i1.x, i2.x, 1.0));
-    float n_ = 0.142857142857;
-    vec3 ns = n_ * D.wyz - D.xzx;
-    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
-    vec4 x_ = floor(j * ns.z);
-    vec4 y_ = floor(j - 7.0 * x_);
-    vec4 x = x_ * ns.x + ns.yyyy;
-    vec4 y = y_ * ns.x + ns.yyyy;
-    vec4 h = 1.0 - abs(x) - abs(y);
-    vec4 b0 = vec4(x.xy, y.xy);
-    vec4 b1 = vec4(x.zw, y.zw);
-    vec4 s0 = floor(b0) * 2.0 + 1.0;
-    vec4 s1 = floor(b1) * 2.0 + 1.0;
-    vec4 sh = -step(h, vec4(0.0));
-    vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
-    vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
-    vec3 p0 = vec3(a0.xy, h.x);
-    vec3 p1 = vec3(a0.zw, h.y);
-    vec3 p2 = vec3(a1.xy, h.z);
-    vec3 p3 = vec3(a1.zw, h.w);
-    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
-    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
-    vec4 m = max(0.6 - vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)), 0.0);
-    m = m * m;
-    return 42.0 * dot(m*m, vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
-  }
-`;
-
-// -----------------------------------------------------------
-// Glass shader (shared constructor)
-// -----------------------------------------------------------
-function makeGlassMaterial() {
-  return new THREE.ShaderMaterial({
-    transparent: true,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-    uniforms: {
-      uTime: { value: 0 },
-      uHover: { value: 0 },
-      uMouse: { value: new THREE.Vector2() },
+// ======== PRNG ========
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hash32(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+// ======== GENOME ========
+function newGenome() {
+  const id = (crypto.randomUUID ? crypto.randomUUID() : 'g-' + Math.random().toString(36).slice(2));
+  const seed = (Math.random() * 4294967296) >>> 0;
+  const r = mulberry32(seed);
+  return {
+    id, seed, birthday: Date.now(),
+    params: {
+      grainMinMs: 40 + r() * 80,
+      grainMaxMs: 150 + r() * 350,
+      pitchDrift: 0.02 + r() * 0.25,
+      chopProbability: 0.3 + r() * 0.5,
+      wakeMeanSeconds: 20 + r() * 90,
+      reverbAmount: 0.15 + r() * 0.45,
+      degradationRate: 0.006 + r() * 0.025,
+      melodicBias: r(),
     },
-    vertexShader: /* glsl */ `
-      varying vec3 vNormal;
-      varying vec3 vViewPos;
-      varying vec3 vWorldPos;
-      varying vec3 vObjPos;
-      uniform float uTime;
-
-      ${GLSL_NOISE}
-
-      void main() {
-        vec3 p = position;
-        // Breathe the glass itself
-        float br = snoise(position * 1.5 + uTime * 0.3) * 0.02;
-        p += normal * br;
-
-        vObjPos = p;
-        vNormal = normalize(normalMatrix * normal);
-        vec4 mvp = modelViewMatrix * vec4(p, 1.0);
-        vViewPos = mvp.xyz;
-        vWorldPos = (modelMatrix * vec4(p, 1.0)).xyz;
-        gl_Position = projectionMatrix * mvp;
+    generation: 0,
+    activationCount: 0,
+  };
+}
+function loadGenome() {
+  try {
+    const raw = localStorage.getItem(LS_GENOME);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  const g = newGenome();
+  localStorage.setItem(LS_GENOME, JSON.stringify(g));
+  return g;
+}
+function saveGenome() {
+  try { localStorage.setItem(LS_GENOME, JSON.stringify(state.genome)); } catch (e) {}
+}
+// ======== STORE (IndexedDB) ========
+function openStore() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) {
+        db.createObjectStore(DB_STORE, { keyPath: 'id' });
       }
-    `,
-    fragmentShader: /* glsl */ `
-      precision highp float;
-      varying vec3 vNormal;
-      varying vec3 vViewPos;
-      varying vec3 vWorldPos;
-      varying vec3 vObjPos;
-      uniform float uTime;
-      uniform float uHover;
-      uniform vec2  uMouse;
-
-      ${GLSL_NOISE}
-
-      void main() {
-        vec3 V = normalize(-vViewPos);
-        float fres = pow(1.0 - max(dot(vNormal, V), 0.0), 2.2);
-
-        // Base glass tint — cool, almost white
-        vec3 body  = vec3(0.86, 0.87, 0.88);
-        vec3 rim   = vec3(1.00, 0.98, 0.95);
-        vec3 deep  = vec3(0.55, 0.57, 0.60);
-
-        // Internal refraction fake: sample a noise in object space
-        float n = snoise(vObjPos * 2.0 + uTime * 0.2);
-        body += n * 0.05;
-
-        // Orange bleed from within when hovered
-        vec3 orange = vec3(1.0, 0.33, 0.05);
-        body = mix(body, orange, uHover * 0.35 * (0.5 + 0.5 * n));
-
-        vec3 col = mix(deep, body, 0.5 + 0.5 * dot(vNormal, vec3(0.3, 0.9, 0.2)));
-        col = mix(col, rim, fres);
-
-        // Specular hot spot on rim
-        col += vec3(1.0) * pow(fres, 8.0) * 0.6;
-
-        // Frosted feel: reduce saturation slightly
-        col = mix(col, vec3(dot(col, vec3(0.33))), 0.15);
-
-        // Alpha: more opaque at rim, translucent in middle
-        float alpha = 0.18 + fres * 0.72 + uHover * 0.1;
-
-        gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
-      }
-    `,
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = (mode) => db.transaction(DB_STORE, mode).objectStore(DB_STORE);
+      resolve({
+        add: (rec) => new Promise((res, rej) => { const r = tx('readwrite').put(rec); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }),
+        get: (id) => new Promise((res, rej) => { const r = tx('readonly').get(id); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }),
+        all: () => new Promise((res, rej) => { const r = tx('readonly').getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }),
+        update: async (id, patch) => {
+          const cur = await new Promise((res, rej) => { const r = tx('readonly').get(id); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+          if (!cur) return;
+          Object.assign(cur, patch);
+          return new Promise((res, rej) => { const r = tx('readwrite').put(cur); r.onsuccess = () => res(); r.onerror = () => rej(r.error); });
+        },
+        del: (id) => new Promise((res, rej) => { const r = tx('readwrite').delete(id); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }),
+        clear: () => new Promise((res, rej) => { const r = tx('readwrite').clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }),
+      });
+    };
+    req.onerror = () => reject(req.error);
   });
 }
-
-// -----------------------------------------------------------
-// Liquid shader (orange plasma)
-// -----------------------------------------------------------
-function makeLiquidMaterial() {
-  return new THREE.ShaderMaterial({
-    transparent: false,
-    uniforms: {
-      uTime: { value: 0 },
-      uHover: { value: 0 },
-    },
-    vertexShader: /* glsl */ `
-      varying vec3 vPos;
-      varying vec3 vNormal;
-      uniform float uTime;
-
-      ${GLSL_NOISE}
-
-      void main() {
-        vec3 p = position;
-        // Undulate
-        float n = snoise(position * 2.0 + uTime * 0.6);
-        p += normal * n * 0.06;
-        vPos = p;
-        vNormal = normalize(normalMatrix * normal);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      precision highp float;
-      varying vec3 vPos;
-      varying vec3 vNormal;
-      uniform float uTime;
-      uniform float uHover;
-
-      ${GLSL_NOISE}
-
-      void main() {
-        // Flowing banding
-        float n1 = snoise(vPos * 3.0 + vec3(uTime * 0.3, 0.0, 0.0));
-        float n2 = snoise(vPos * 8.0 - vec3(0.0, uTime * 0.4, 0.0));
-        float n  = n1 * 0.7 + n2 * 0.3;
-
-        vec3 deep  = vec3(0.78, 0.14, 0.00); // burnt orange
-        vec3 mid   = vec3(1.00, 0.27, 0.00); // deep orange
-        vec3 hot   = vec3(1.00, 0.55, 0.12); // bright orange
-        vec3 glow  = vec3(1.00, 0.82, 0.40); // almost-yellow highlight
-
-        vec3 col = mix(deep, mid, smoothstep(-0.6, 0.2, n));
-        col     = mix(col,  hot,  smoothstep(0.1, 0.6, n));
-        col     = mix(col,  glow, smoothstep(0.5, 0.9, n1 * n2));
-
-        // Rim glow
-        float rim = pow(1.0 - max(dot(normalize(vNormal), vec3(0,0,1)), 0.0), 1.5);
-        col += vec3(1.0, 0.5, 0.2) * rim * 0.25;
-
-        // Hover boost
-        col = mix(col, glow, uHover * 0.15);
-
-        gl_FragColor = vec4(col, 1.0);
-      }
-    `,
-  });
+function sampleMeta(s) {
+  return {
+    id: s.id, sampleRate: s.sampleRate, recordedAt: s.recordedAt,
+    lastPlayedAt: s.lastPlayedAt || 0, generation: s.generation,
+    mutationLevel: s.mutationLevel || 0, source: s.source,
+    survivalScore: s.survivalScore == null ? 1 : s.survivalScore,
+    parentId: s.parentId || null,
+    durationMs: (s.pcm.length / s.sampleRate) * 1000,
+  };
 }
-
-// -----------------------------------------------------------
-// Wireframe line accents
-// -----------------------------------------------------------
-function makeLineMaterial(opacity = 0.7) {
-  return new THREE.LineBasicMaterial({
-    color: 0x1a1a1a,
-    transparent: true,
-    opacity,
-  });
-}
-
-// -----------------------------------------------------------
-// Product geometries
-// -----------------------------------------------------------
-function createOrb() {
-  const group = new THREE.Group();
-  group.userData.kind = "orb";
-
-  // Outer glass
-  const outerGeom = new THREE.IcosahedronGeometry(1.0, 4);
-  const outer = new THREE.Mesh(outerGeom, makeGlassMaterial());
-  outer.userData.isGlass = true;
-  group.add(outer);
-
-  // Inner liquid
-  const innerGeom = new THREE.IcosahedronGeometry(0.62, 4);
-  const inner = new THREE.Mesh(innerGeom, makeLiquidMaterial());
-  inner.userData.isLiquid = true;
-  group.add(inner);
-
-  // Wire rings
-  for (let i = 0; i < 3; i++) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(1.15 + i * 0.05, 0.003, 8, 96),
-      makeLineMaterial(0.6 - i * 0.15)
-    );
-    ring.rotation.x = Math.random() * Math.PI;
-    ring.rotation.y = Math.random() * Math.PI;
-    ring.userData.orbit = { ax: Math.random() - 0.5, ay: Math.random() - 0.5 };
-    group.add(ring);
-  }
-
-  // Tiny orbiting sphere
-  const bead = new THREE.Mesh(
-    new THREE.SphereGeometry(0.04, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xff4500 })
-  );
-  bead.userData.isBead = true;
-  group.add(bead);
-
-  group.userData.hitMesh = outer;
-  return group;
-}
-
-function createPillar() {
-  const group = new THREE.Group();
-  group.userData.kind = "pillar";
-
-  // Outer: Lathe swept profile, twisted
-  const points = [];
-  for (let i = 0; i <= 40; i++) {
-    const t = i / 40;
-    const y = (t - 0.5) * 2.8;
-    const r = 0.38 + 0.15 * Math.sin(t * Math.PI * 2.5) + 0.08 * Math.sin(t * Math.PI * 6);
-    points.push(new THREE.Vector2(r, y));
-  }
-  const latheGeom = new THREE.LatheGeometry(points, 96);
-
-  // Twist vertices
-  const pos = latheGeom.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const angle = y * 0.6;
-    const nx = x * Math.cos(angle) - z * Math.sin(angle);
-    const nz = x * Math.sin(angle) + z * Math.cos(angle);
-    pos.setXYZ(i, nx, y, nz);
-  }
-  latheGeom.computeVertexNormals();
-
-  const outer = new THREE.Mesh(latheGeom, makeGlassMaterial());
-  outer.userData.isGlass = true;
-  group.add(outer);
-
-  // Inner: thin liquid column
-  const innerGeom = new THREE.CylinderGeometry(0.18, 0.18, 2.6, 48, 16);
-  const innerPos = innerGeom.attributes.position;
-  for (let i = 0; i < innerPos.count; i++) {
-    const x = innerPos.getX(i);
-    const y = innerPos.getY(i);
-    const z = innerPos.getZ(i);
-    const bulge = Math.sin(y * 2.0) * 0.05;
-    const angle = y * 0.8;
-    const len = Math.hypot(x, z) + bulge;
-    const nx = Math.cos(Math.atan2(z, x) + angle) * len;
-    const nz = Math.sin(Math.atan2(z, x) + angle) * len;
-    innerPos.setXYZ(i, nx, y, nz);
-  }
-  innerGeom.computeVertexNormals();
-
-  const inner = new THREE.Mesh(innerGeom, makeLiquidMaterial());
-  inner.userData.isLiquid = true;
-  group.add(inner);
-
-  // Cap rings
-  for (let cy = -1.4; cy <= 1.4; cy += 0.35) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.45, 0.004, 6, 96),
-      makeLineMaterial(0.35)
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = cy;
-    group.add(ring);
-  }
-
-  group.scale.set(0.8, 0.8, 0.8);
-  group.userData.hitMesh = outer;
-  return group;
-}
-
-function createRing() {
-  const group = new THREE.Group();
-  group.userData.kind = "ring";
-
-  const outerGeom = new THREE.TorusGeometry(1.0, 0.22, 32, 128);
-  const outer = new THREE.Mesh(outerGeom, makeGlassMaterial());
-  outer.userData.isGlass = true;
-  group.add(outer);
-
-  // Inner liquid torus
-  const innerGeom = new THREE.TorusGeometry(1.0, 0.14, 24, 128);
-  const inner = new THREE.Mesh(innerGeom, makeLiquidMaterial());
-  inner.userData.isLiquid = true;
-  group.add(inner);
-
-  // Orbiting drop
-  const drop = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 24, 24),
-    makeLiquidMaterial()
-  );
-  drop.userData.isOrbit = true;
-  group.add(drop);
-
-  // Outer wire ring
-  const wire = new THREE.Mesh(
-    new THREE.TorusGeometry(1.35, 0.003, 8, 128),
-    makeLineMaterial(0.4)
-  );
-  group.add(wire);
-
-  group.userData.hitMesh = outer;
-  return group;
-}
-
-function createSpine() {
-  const group = new THREE.Group();
-  group.userData.kind = "spine";
-
-  const segments = [];
-  const SEG_COUNT = 7;
-  for (let i = 0; i < SEG_COUNT; i++) {
-    const segGroup = new THREE.Group();
-
-    // Vertebra shell
-    const r = 0.32 - i * 0.018;
-    const shell = new THREE.Mesh(
-      new THREE.SphereGeometry(r, 32, 24),
-      makeGlassMaterial()
-    );
-    shell.userData.isGlass = true;
-    shell.scale.set(1.0, 0.75, 1.0);
-    segGroup.add(shell);
-
-    // Plasma core
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(r * 0.55, 24, 16),
-      makeLiquidMaterial()
-    );
-    core.userData.isLiquid = true;
-    segGroup.add(core);
-
-    // Connecting thin line to next
-    if (i < SEG_COUNT - 1) {
-      const lineGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0.38, 0, 0),
-      ]);
-      const connector = new THREE.Line(lineGeom, makeLineMaterial(0.5));
-      segGroup.add(connector);
+// ======== AUDIO ========
+function makeIR(ctx, dur, decay) {
+  const len = Math.floor(ctx.sampleRate * dur);
+  const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const data = ir.getChannelData(c);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
     }
-
-    segments.push(segGroup);
-    group.add(segGroup);
   }
-  group.userData.segments = segments;
-  group.userData.hitMesh = segments[Math.floor(SEG_COUNT / 2)].children[0];
-  return group;
+  return ir;
 }
-
-// -----------------------------------------------------------
-// Instantiate products + layout
-// -----------------------------------------------------------
-const productBuilders = [createOrb, createPillar, createRing, createSpine];
-const products = productBuilders.map((fn, i) => {
-  const obj = fn();
-  obj.userData.id = i;
-  obj.userData.data = PRODUCTS[i];
-  obj.userData.seed = Math.random() * 100;
-  scene.add(obj);
-  return obj;
-});
-
-// Layout: 4 products arranged along the Z-axis as a corridor.
-// Each product sits 12 world units ahead of the previous one.
-// Slight x/y offsets give each station its own "personality" when
-// the camera dollies up to it. HUD panel lives on the right side
-// of the viewport, so products are biased left for balance.
-const layouts = [
-  { pos: [-1.5,  0.5,   0],  scale: 1.0 },   // ORB      — station 1 target
-  { pos: [-1.8, -0.3, -12],  scale: 1.2 },   // PILLAR   — station 2 target
-  { pos: [-1.3,  0.7, -24],  scale: 0.95 },  // RING     — station 3 target
-  { pos: [-2.0, -0.2, -36],  scale: 1.0 },   // SPINE    — station 4 target
-];
-products.forEach((p, i) => {
-  p.position.set(...layouts[i].pos);
-  p.scale.multiplyScalar(layouts[i].scale);
-  // Random-ish orientation so products don't look aligned on a rail
-  p.rotation.set(
-    Math.random() * 0.5,
-    Math.random() * Math.PI * 2,
-    Math.random() * 0.3
-  );
-});
-
-// -----------------------------------------------------------
-// SPATIAL STATIONS — the camera dollies along the Z corridor.
-// Station 0 is the intro (ahead of all products, showing the void).
-// Stations 1-4 each park the camera 6 world units in front of their
-// target product. Station 5 flies past all products into the void,
-// doubling as the atelier / contact panel.
-// -----------------------------------------------------------
-const STATIONS = [
-  { camZ:  12, lookZ:   4,  productIdx: null }, // 0 intro
-  { camZ:   6, lookZ:   0,  productIdx: 0    }, // 1 NEBULA SPHERE
-  { camZ:  -6, lookZ: -12,  productIdx: 1    }, // 2 RESONANT PILLAR
-  { camZ: -18, lookZ: -24,  productIdx: 2    }, // 3 ORBITAL FLUX
-  { camZ: -30, lookZ: -36,  productIdx: 3    }, // 4 VERTEBRAE SYNTH
-  { camZ: -42, lookZ: -48,  productIdx: null }, // 5 atelier / contact
-];
-
-let currentStation = 0;
-let smoothCamZ = STATIONS[0].camZ;
-let smoothLookZ = STATIONS[0].lookZ;
-
-// -----------------------------------------------------------
-// 3D HERO TITLE + 3D MARQUEE
-// Real extruded geometry with reflective PBR material.
-// Per-character meshes so each letter inflates / rotates / wobbles
-// independently with cursor proximity.
-// -----------------------------------------------------------
-const text3D = {
-  font: null,
-  hero: null, // THREE.Group
-  heroChars: [], // [{ mesh, seed, rotSeed, lineIndex }]
-  heroLines: [], // per-line group for resize layout
-  heroBaseY: 2.0, // world-Y of hero center at scroll=0
-  marquee: null, // THREE.Group
-  marqueeChars: [],
-  marqueeLoopWidth: 0, // width of one phrase copy
-  marqueeBaseY: -2.85, // pinned bottom of viewport
-  ready: false,
-};
-
-// Some geometry helpers
-const _v3 = new THREE.Vector3();
-const _box = new THREE.Box3();
-
-function buildCharMesh(ch, material, size, italic = 0) {
-  // Nearly-flat balloon letter: a thin puffed shape, not a deep prism.
-  // Depth is intentionally tiny so edges never dominate the view, bevel
-  // is just enough to catch a highlight.
-  const geom = new TextGeometry(ch, {
-    font: text3D.font,
-    size,
-    depth: size * 0.015,
-    curveSegments: 8,
-    bevelEnabled: true,
-    bevelThickness: size * 0.012,
-    bevelSize: size * 0.014,
-    bevelOffset: 0,
-    bevelSegments: 4,
-  });
-  geom.computeBoundingBox();
-  const bb = geom.boundingBox;
-  const width = (bb.max.x - bb.min.x) || size * 0.3;
-  // Center the geometry horizontally at origin of mesh (keep baseline at y=0)
-  const offsetX = -(bb.max.x + bb.min.x) / 2;
-  const offsetY = -(bb.max.y + bb.min.y) / 2;
-  geom.translate(offsetX, offsetY, 0);
-  const mesh = new THREE.Mesh(geom, material);
-  if (italic) mesh.rotation.z = -italic;
-  mesh.userData.width = width;
-  return mesh;
+async function initAudio() {
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctor();
+  if (ctx.state === 'suspended') await ctx.resume();
+  const master = ctx.createGain();
+  master.gain.value = 0.7;
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  const convolver = ctx.createConvolver();
+  convolver.buffer = makeIR(ctx, 2.4, 3.0);
+  const revSend = ctx.createGain();
+  revSend.gain.value = state.genome.params.reverbAmount;
+  const delay = ctx.createDelay(2.0);
+  delay.delayTime.value = 0.28;
+  const feedback = ctx.createGain();
+  feedback.gain.value = 0.38;
+  delay.connect(feedback);
+  feedback.connect(delay);
+  const delSend = ctx.createGain();
+  delSend.gain.value = 0.18;
+  master.connect(analyser);
+  analyser.connect(ctx.destination);
+  revSend.connect(convolver);
+  convolver.connect(master);
+  delSend.connect(delay);
+  delay.connect(master);
+  state.ctx = ctx;
+  state.master = master;
+  state.analyser = analyser;
+  state.revSend = revSend;
+  state.delSend = delSend;
+  state.analyserData = new Uint8Array(analyser.frequencyBinCount);
 }
-
-function buildHero3D() {
-  const group = new THREE.Group();
-  text3D.hero = group;
-  scene.add(group);
-
-  const lines = [
-    { text: "BREATHING", material: chromeMat, size: 0.42, italic: 0 },
-    { text: "INSTRUMENTS", material: chromeMat, size: 0.42, italic: 0 },
-    { text: "FROM", material: inkTextMat, size: 0.30, italic: 0 },
-    { text: "LIQUID", material: orangeTextMat, size: 0.46, italic: 0.06 },
-  ];
-
-  const lineGap = 0.06; // vertical gap between lines
-  const charGap = 0.04; // tracking between chars
-
-  let yCursor = 0;
-
-  lines.forEach((line, li) => {
-    const lineGroup = new THREE.Group();
-    // Pre-build all chars in this line
-    const meshes = [];
-    let totalW = 0;
-    for (const ch of line.text) {
-      if (ch === " ") {
-        meshes.push({ space: true, width: line.size * 0.55 });
-        totalW += line.size * 0.55;
-      } else {
-        const mesh = buildCharMesh(ch, line.material, line.size, line.italic);
-        meshes.push({ mesh, width: mesh.userData.width });
-        totalW += mesh.userData.width;
-      }
+// ======== RECORDER ========
+let micStream = null;
+async function ensureMic() {
+  if (micStream) return micStream;
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  return micStream;
+}
+async function recordBreath(durMs = 3000) {
+  if (state.recording) return null;
+  state.recording = true;
+  try {
+    await ensureMic();
+    const rec = new MediaRecorder(micStream);
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const done = new Promise((r) => (rec.onstop = r));
+    rec.start();
+    await new Promise((r) => setTimeout(r, durMs));
+    rec.stop();
+    await done;
+    if (!chunks.length) return null;
+    const blob = new Blob(chunks, { type: chunks[0].type || 'audio/webm' });
+    const ab = await blob.arrayBuffer();
+    const audioBuf = await state.ctx.decodeAudioData(ab);
+    const pcm = audioBuf.getChannelData(0).slice();
+    const record = {
+      id: crypto.randomUUID(),
+      pcm, sampleRate: audioBuf.sampleRate,
+      recordedAt: Date.now(), lastPlayedAt: 0,
+      generation: state.genome.generation,
+      mutationLevel: 0, source: 'mic', survivalScore: 1,
+      parentId: null,
+    };
+    await state.store.add(record);
+    state.samples.push(sampleMeta(record));
+    return record;
+  } finally {
+    state.recording = false;
+  }
+}
+// ======== VOICE / CHOPPER ========
+function toAudioBuffer(rec) {
+  const cached = state.bufferCache.get(rec.id);
+  if (cached) return cached;
+  const buf = state.ctx.createBuffer(1, rec.pcm.length, rec.sampleRate);
+  buf.copyToChannel(rec.pcm, 0);
+  state.bufferCache.set(rec.id, buf);
+  if (state.bufferCache.size > 48) {
+    const first = state.bufferCache.keys().next().value;
+    state.bufferCache.delete(first);
+  }
+  return buf;
+}
+function triggerGrain(rec, opts) {
+  const ctx = state.ctx;
+  const { offsetMs, durationMs, rate, pan, gain, mutation } = opts;
+  const buf = toAudioBuffer(rec);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = rate;
+  const env = ctx.createGain();
+  const t0 = ctx.currentTime;
+  const dur = Math.max(0.02, durationMs / 1000);
+  const atk = Math.min(0.025, dur * 0.35);
+  env.gain.setValueAtTime(0, t0);
+  env.gain.linearRampToValueAtTime(gain, t0 + atk);
+  env.gain.setValueAtTime(gain, t0 + dur - atk);
+  env.gain.linearRampToValueAtTime(0, t0 + dur);
+  const panner = ctx.createStereoPanner();
+  panner.pan.value = pan;
+  let tail = env;
+  if (mutation > 0.25) {
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = Math.max(600, 14000 * (1 - mutation * 0.85));
+    lp.Q.value = 0.5;
+    env.connect(lp);
+    tail = lp;
+  }
+  if (mutation > 0.6) {
+    const ws = ctx.createWaveShaper();
+    const bits = Math.max(2, Math.floor(8 - mutation * 6));
+    const steps = Math.pow(2, bits);
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) {
+      const x = (i / 1024) * 2 - 1;
+      curve[i] = Math.round(x * steps) / steps;
     }
-    totalW += (meshes.length - 1) * charGap;
-
-    // Lay out centered
-    let px = -totalW / 2;
-    meshes.forEach((m, ci) => {
-      if (!m.space) {
-        m.mesh.position.x = px + m.width / 2;
-        m.mesh.position.y = 0;
-        lineGroup.add(m.mesh);
-        text3D.heroChars.push({
-          mesh: m.mesh,
-          seed: Math.random() * 1000,
-          rotSeed: (Math.random() - 0.5) * 2,
-          lineIndex: li,
-          italicBase: line.italic ? -line.italic : 0,
-        });
-      }
-      px += m.width + charGap;
-    });
-
-    lineGroup.position.y = yCursor;
-    yCursor -= line.size * 1.05 + lineGap;
-    text3D.heroLines.push({ group: lineGroup, size: line.size });
-    group.add(lineGroup);
+    ws.curve = curve;
+    tail.connect(ws);
+    tail = ws;
+  }
+  src.connect(env);
+  tail.connect(panner);
+  panner.connect(state.master);
+  panner.connect(state.revSend);
+  if (Math.random() < 0.4) panner.connect(state.delSend);
+  try { src.start(t0, Math.max(0, offsetMs / 1000), dur * 1.1); } catch (e) {}
+  src.stop(t0 + dur + 0.08);
+  src.onended = () => { try { src.disconnect(); env.disconnect(); panner.disconnect(); } catch (e) {} };
+}
+// ======== EVOLVER ========
+function drift(key, amount, lo, hi) {
+  const v = state.genome.params[key] + (state.prng() * 2 - 1) * amount;
+  state.genome.params[key] = Math.max(lo, Math.min(hi, v));
+}
+async function deriveSample(parentMeta) {
+  const full = await state.store.get(parentMeta.id);
+  if (!full) return;
+  const src = full.pcm;
+  const sr = full.sampleRate;
+  const startS = Math.floor(state.prng() * src.length * 0.7);
+  const lenS = Math.floor(sr * (0.08 + state.prng() * 0.6));
+  const end = Math.min(src.length, startS + lenS);
+  let child = src.slice(startS, end);
+  if (state.prng() < 0.3) child = child.slice().reverse();
+  if (state.prng() < 0.4) {
+    const gain = 0.6 + state.prng() * 0.5;
+    for (let i = 0; i < child.length; i++) child[i] *= gain;
+  }
+  const rec = {
+    id: crypto.randomUUID(),
+    pcm: child, sampleRate: sr,
+    recordedAt: Date.now(), lastPlayedAt: 0,
+    generation: state.genome.generation,
+    mutationLevel: Math.min(0.7, (parentMeta.mutationLevel || 0) + 0.1),
+    source: 'derived', survivalScore: 0.8,
+    parentId: parentMeta.id,
+  };
+  await state.store.add(rec);
+  state.samples.push(sampleMeta(rec));
+}
+async function evolveTick() {
+  const params = state.genome.params;
+  for (const meta of state.samples) {
+    meta.mutationLevel = Math.min(1, meta.mutationLevel + params.degradationRate * (0.5 + state.prng()));
+    if (state.prng() < 0.06) meta.survivalScore *= 0.88;
+    try { await state.store.update(meta.id, { mutationLevel: meta.mutationLevel, survivalScore: meta.survivalScore }); } catch (e) {}
+  }
+  const fresh = state.samples.filter((s) => s.mutationLevel < 0.35 && s.source !== 'derived');
+  if (fresh.length && state.prng() < 0.45) {
+    const parent = fresh[Math.floor(state.prng() * fresh.length)];
+    await deriveSample(parent);
+  }
+  // cull samples that have withered below threshold
+  const dead = state.samples.filter((s) => s.survivalScore < 0.05);
+  for (const s of dead) {
+    try { await state.store.del(s.id); } catch (e) {}
+  }
+  state.samples = state.samples.filter((s) => s.survivalScore >= 0.05);
+  drift('pitchDrift', 0.01, 0, 1);
+  drift('chopProbability', 0.03, 0.1, 0.95);
+  drift('wakeMeanSeconds', 5, 10, 180);
+  drift('reverbAmount', 0.02, 0, 0.8);
+  drift('degradationRate', 0.001, 0.002, 0.05);
+  drift('melodicBias', 0.02, 0, 1);
+  drift('grainMinMs', 3, 20, 160);
+  drift('grainMaxMs', 8, 120, 800);
+  if (state.revSend) state.revSend.gain.value = state.genome.params.reverbAmount;
+  state.genome.generation++;
+  state.lastEvolveAt = Date.now();
+  saveGenome();
+}
+// ======== SCHEDULER ========
+function scheduleNextWake() {
+  const mean = state.genome.params.wakeMeanSeconds;
+  const u = Math.max(1e-6, state.prng());
+  const delay = Math.max(8, -Math.log(u) * mean * 0.6);
+  state.nextWakeAt = Date.now() + delay * 1000;
+}
+function pickMood() {
+  const moods = ['hush', 'chatter', 'memory', 'new'];
+  const now = Date.now();
+  let oldestAge = 0;
+  for (const s of state.samples) { const a = now - s.recordedAt; if (a > oldestAge) oldestAge = a; }
+  const fewSamples = state.samples.length < 2;
+  const memoryWeight = oldestAge > 3 * 60 * 1000 ? 0.35 : 0.05;
+  const newWeight = fewSamples ? 0.5 : 0.15;
+  const weights = [0.25, 0.35, memoryWeight, newWeight];
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = state.prng() * total;
+  for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r < 0) return moods[i]; }
+  return 'chatter';
+}
+function pickSamplesForMood(mood) {
+  const now = Date.now();
+  return state.samples.filter((s) => {
+    const ageMs = now - s.recordedAt;
+    if (mood === 'memory') return ageMs > 90 * 1000 || s.mutationLevel > 0.4;
+    if (mood === 'new') return ageMs < 60 * 1000 || s.source === 'mic';
+    if (mood === 'hush') return s.mutationLevel < 0.6;
+    return true;
   });
-
-  // Recenter group vertically around its bbox
-  _box.setFromObject(group);
-  const centerY = (_box.max.y + _box.min.y) / 2;
-  group.children.forEach((lg) => (lg.position.y -= centerY));
-
-  layoutHero3D();
 }
-
-function layoutHero3D() {
-  if (!text3D.hero) return;
-  // Compact. Target ~32% viewport width / ~36% height so the title stays
-  // up in its own area and never crowds the rest of the page.
-  const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
-  const vw = vh * camera.aspect;
-  text3D.hero.scale.setScalar(1);
-  // Neutral rotation during measure so bbox reflects true extents.
-  text3D.hero.rotation.set(0, 0, 0);
-  _box.setFromObject(text3D.hero);
-  const natW = _box.max.x - _box.min.x;
-  const natH = _box.max.y - _box.min.y;
-  const sw = (vw * 0.32) / natW;
-  const sh = (vh * 0.36) / natH;
-  const s = Math.min(sw, sh);
-  text3D.hero.scale.setScalar(s);
-  // Sit in upper-third of viewport like a title, not dead center.
-  text3D.hero.position.set(0, vh * 0.12, 0.2);
-  text3D.heroBaseY = vh * 0.12;
+function wake(manual = false) {
+  if (state.awake || !state.samples.length) {
+    if (!state.samples.length && manual) { autoRecord(); }
+    return;
+  }
+  state.awake = true;
+  state.mood = pickMood();
+  const minDur = state.mood === 'hush' ? 4000 : 6000;
+  const maxDur = state.mood === 'memory' ? 30000 : 22000;
+  state.awakeUntil = Date.now() + minDur + state.prng() * (maxDur - minDur);
+  state.genome.activationCount++;
+  saveGenome();
+  document.body.className = 'awake mood-' + state.mood;
+  scheduleNextBurst();
 }
-
-function buildMarquee3D() {
-  const group = new THREE.Group();
-  text3D.marquee = group;
-  scene.add(group);
-
-  const phrase = "BREATHING · INSTRUMENTS · FROM · LIQUID · ";
-  const repeats = 6;
-  const size = 0.32;
-  const charGap = 0.035;
-
-  // Build one pass so we know its width, then replicate
-  const passWidth = (() => {
+function sleep() {
+  state.awake = false;
+  state.mood = 'hush';
+  document.body.className = '';
+  scheduleNextWake();
+}
+function scheduleNextBurst() {
+  if (!state.awake) return;
+  if (Date.now() > state.awakeUntil) { sleep(); return; }
+  const pool = pickSamplesForMood(state.mood);
+  if (!pool.length) { sleep(); return; }
+  const meta = pool[Math.floor(state.prng() * pool.length)];
+  const grainCount = state.mood === 'hush' ? 1 + Math.floor(state.prng() * 2)
+    : state.mood === 'chatter' ? 2 + Math.floor(state.prng() * 6)
+    : 1 + Math.floor(state.prng() * 4);
+  for (let i = 0; i < grainCount; i++) {
+    setTimeout(() => playGrainFromMeta(meta), i * (30 + state.prng() * 90));
+  }
+  const baseInterval = state.mood === 'hush' ? 800 : state.mood === 'chatter' ? 180 : 420;
+  const interval = baseInterval + state.prng() * baseInterval * 1.6;
+  setTimeout(scheduleNextBurst, interval);
+}
+async function playGrainFromMeta(meta) {
+  const full = await state.store.get(meta.id);
+  if (!full) return;
+  const p = state.genome.params;
+  const grainMs = p.grainMinMs + state.prng() * Math.max(10, p.grainMaxMs - p.grainMinMs);
+  const durMs = Math.min(grainMs, meta.durationMs - 20);
+  if (durMs < 20) return;
+  const maxOffset = Math.max(0, meta.durationMs - durMs);
+  const offsetMs = state.prng() * maxOffset;
+  const mouseBias = (state.mouse.x - 0.5) * 0.6;
+  const pitchStep = (state.prng() * 2 - 1) * p.pitchDrift;
+  const rate = Math.pow(2, pitchStep) * (1 + mouseBias * 0.25);
+  const pan = (state.prng() * 2 - 1) * 0.7;
+  const yGain = 0.3 + (1 - state.mouse.y) * 0.4;
+  const gain = (0.35 + state.prng() * 0.3) * yGain;
+  triggerGrain(full, { offsetMs, durationMs: durMs, rate: Math.max(0.25, Math.min(4, rate)), pan, gain, mutation: meta.mutationLevel });
+  meta.lastPlayedAt = Date.now();
+}
+async function autoRecord() {
+  if (state.recording) return;
+  if (state.samples.length >= 30) return;
+  if (!micStream) return; // don't prompt mid-sleep if user hasn't granted yet
+  await recordBreath(2000 + state.prng() * 2000);
+}
+// ======== INPUT (mouse) ========
+function initInput() {
+  const cv = document.getElementById('viz');
+  cv.addEventListener('mousemove', (e) => {
+    state.mouse.x = e.clientX / window.innerWidth;
+    state.mouse.y = e.clientY / window.innerHeight;
+  });
+  cv.addEventListener('mousedown', (e) => {
+    state.mouse.down = true;
+    if (!state.started) return;
+    playerBurst();
+  });
+  cv.addEventListener('mouseup', () => { state.mouse.down = false; });
+  cv.addEventListener('mouseleave', () => { state.mouse.down = false; });
+  // touch
+  cv.addEventListener('touchstart', (e) => {
+    if (e.touches.length) {
+      state.mouse.x = e.touches[0].clientX / window.innerWidth;
+      state.mouse.y = e.touches[0].clientY / window.innerHeight;
+      state.mouse.down = true;
+      playerBurst();
+    }
+  }, { passive: true });
+  cv.addEventListener('touchmove', (e) => {
+    if (e.touches.length) {
+      state.mouse.x = e.touches[0].clientX / window.innerWidth;
+      state.mouse.y = e.touches[0].clientY / window.innerHeight;
+    }
+  }, { passive: true });
+  cv.addEventListener('touchend', () => { state.mouse.down = false; });
+  // hold loop
+  setInterval(() => {
+    if (state.mouse.down && state.started && state.samples.length) {
+      playerBurst();
+    }
+  }, 110);
+}
+function playerBurst() {
+  if (!state.samples.length) return;
+  const pool = state.samples;
+  const meta = pool[Math.floor(Math.random() * pool.length)];
+  const count = 1 + Math.floor(state.mouse.y * 4);
+  for (let i = 0; i < count; i++) {
+    setTimeout(() => playGrainFromMeta(meta), i * (10 + Math.random() * 50));
+  }
+}
+// ======== VISUALIZER ========
+const viz = { cv: null, ctx: null, w: 0, h: 0, dpr: 1, phase: 0, ring: new Array(96).fill(0) };
+function resizeViz() {
+  viz.dpr = Math.min(2, window.devicePixelRatio || 1);
+  viz.w = window.innerWidth;
+  viz.h = window.innerHeight;
+  viz.cv.width = viz.w * viz.dpr;
+  viz.cv.height = viz.h * viz.dpr;
+  viz.cv.style.width = viz.w + 'px';
+  viz.cv.style.height = viz.h + 'px';
+  viz.ctx.setTransform(viz.dpr, 0, 0, viz.dpr, 0, 0);
+}
+function moodColor() {
+  switch (state.mood) {
+    case 'chatter': return '#ff8a2a';
+    case 'memory': return '#a06aa0';
+    case 'new': return '#e8c66e';
+    default: return '#3c5a6e';
+  }
+}
+function drawViz(dt) {
+  const c = viz.ctx;
+  const w = viz.w, h = viz.h;
+  c.fillStyle = 'rgba(10, 9, 7, 0.18)';
+  c.fillRect(0, 0, w, h);
+  const cx = w / 2, cy = h / 2;
+  const baseR = Math.min(w, h) * 0.18;
+  // read analyser
+  let level = 0;
+  if (state.analyser && state.analyserData) {
+    state.analyser.getByteFrequencyData(state.analyserData);
     let sum = 0;
-    for (const ch of phrase) {
-      if (ch === " ") sum += size * 0.55;
-      else {
-        // Approximate width from a sample mesh (build & discard)
-        const tmp = buildCharMesh(ch, chromeMat, size, 0);
-        sum += tmp.userData.width + charGap;
-        tmp.geometry.dispose();
-      }
-    }
-    return sum;
-  })();
-
-  let px = 0;
-  for (let r = 0; r < repeats; r++) {
-    const italic = r % 2 === 1 ? 0.08 : 0;
-    const mat = r % 2 === 1 ? orangeTextMat : chromeMat;
-    for (const ch of phrase) {
-      if (ch === " ") {
-        px += size * 0.55;
-        continue;
-      }
-      const mesh = buildCharMesh(ch, mat, size, italic);
-      mesh.position.x = px + mesh.userData.width / 2;
-      group.add(mesh);
-      text3D.marqueeChars.push({
-        mesh,
-        seed: Math.random() * 1000,
-        rotSeed: (Math.random() - 0.5) * 2,
-        italicBase: -italic,
-      });
-      px += mesh.userData.width + charGap;
-    }
+    for (let i = 0; i < state.analyserData.length; i++) sum += state.analyserData[i];
+    level = sum / (state.analyserData.length * 255);
   }
-  text3D.marqueeLoopWidth = passWidth;
-
-  layoutMarquee3D();
-}
-
-function layoutMarquee3D() {
-  if (!text3D.marquee) return;
-  const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
-  // Pin near bottom of viewport (world-Y), slightly off the edge
-  text3D.marqueeBaseY = -vh * 0.42;
-  text3D.marquee.position.y = text3D.marqueeBaseY;
-  text3D.marquee.position.z = 0.0;
-}
-
-// ---- 3D WebGL text is DISABLED. Perspective foreshortening on extruded
-// letters kept letting their geometry fill the viewport at certain cursor
-// positions, obscuring everything else. We render the hero title + marquee
-// as HTML with CSS chrome / balloon styling instead (see style.css).
-// The builder / layout / updater functions above are kept but dormant.
-// -----------------------------------------------------------
-// (Intentionally no fontLoader.load() call — text3D.ready stays false,
-// updateText3D() early-returns, buildHero3D()/buildMarquee3D() never fire.)
-
-// ---- Per-frame update: per-char proximity inflate + marquee scroll ----
-const _tmpNdc = new THREE.Vector3();
-function updateText3D(t) {
-  if (!text3D.ready) return;
-
-  const mx = state.mouse.x;
-  const my = state.mouse.y;
-  const W = state.width;
-  const H = state.height;
-  // Tighter influence radius so only nearby letters puff up
-  const R = 180;
-  const R2 = R * R;
-
-  // --- Hero: scroll-sync + per-char gentle bubble pulse ---
-  if (text3D.hero) {
-    // Move hero up as user scrolls, so it feels tied to the hero section.
-    const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
-    const worldPerPx = vh / H;
-    text3D.hero.position.y =
-      text3D.heroBaseY + state.scroll * worldPerPx * 1.1;
-    // No group-level tilt — keeping the text face-on guarantees we never see
-    // its sides, which would otherwise look like long dark bars.
-    text3D.hero.rotation.set(0, 0, 0);
-
-    for (let i = 0; i < text3D.heroChars.length; i++) {
-      const c = text3D.heroChars[i];
-      // Project char position to screen
-      c.mesh.updateWorldMatrix(true, false);
-      _tmpNdc.setFromMatrixPosition(c.mesh.matrixWorld);
-      _tmpNdc.project(camera);
-      const sx = (_tmpNdc.x * 0.5 + 0.5) * W;
-      const sy = (-_tmpNdc.y * 0.5 + 0.5) * H;
-
-      const dx = mx - sx;
-      const dy = my - sy;
-      const d2 = dx * dx + dy * dy;
-
-      let s = 0;
-      if (d2 < R2) s = 1 - Math.sqrt(d2) / R;
-      const ss = s * s;
-
-      // Gentle ambient breathing + small pop-on-hover — max ~1.22x
-      const amb = Math.sin(t * 1.6 + c.seed) * 0.02;
-      const scale = 1 + amb + ss * 0.2;
-      c.mesh.scale.setScalar(scale);
-
-      // Keep letters face-on: only Z rotation (italic + tiny wobble), no X/Y
-      // which would expose their extruded sides.
-      const rz = c.italicBase + Math.sin(t * 2.5 + c.seed) * ss * 0.04;
-      c.mesh.rotation.set(0, 0, rz);
-    }
+  // breathe
+  viz.phase += dt * (state.awake ? 1.3 : 0.45);
+  const breath = 0.5 + Math.sin(viz.phase) * 0.5;
+  const r = baseR * (0.85 + breath * 0.2 + level * 0.6);
+  // mouse parallax
+  const mx = (state.mouse.x - 0.5) * 40;
+  const my = (state.mouse.y - 0.5) * 40;
+  // concentric rings
+  const col = moodColor();
+  c.lineWidth = 1;
+  for (let i = 0; i < 8; i++) {
+    const rr = r * (0.5 + i * 0.14) + level * 20 * i;
+    c.strokeStyle = col + Math.floor(30 - i * 3).toString(16).padStart(2, '0');
+    c.beginPath();
+    c.arc(cx + mx * (1 - i / 12), cy + my * (1 - i / 12), rr, 0, Math.PI * 2);
+    c.stroke();
   }
-
-  // --- Marquee: translate loop + per-char gentle bubble pulse ---
-  if (text3D.marquee) {
-    const speed = 0.22; // world units/sec — calmer ribbon
-    const x = -((t * speed) % text3D.marqueeLoopWidth);
-    // Scale the ribbon so letters are ~3.5% of viewport height — a thin strip
-    const vh = 2 * camera.position.z * Math.tan((camera.fov * Math.PI) / 360);
-    const targetWorldH = vh * 0.035;
-    const natH = 0.32; // buildCharMesh size for marquee
-    const sc = targetWorldH / natH;
-    text3D.marquee.scale.setScalar(sc);
-    text3D.marquee.position.x = x * sc;
-    text3D.marquee.position.y = text3D.marqueeBaseY;
-
-    for (let i = 0; i < text3D.marqueeChars.length; i++) {
-      const c = text3D.marqueeChars[i];
-      c.mesh.updateWorldMatrix(true, false);
-      _tmpNdc.setFromMatrixPosition(c.mesh.matrixWorld);
-      _tmpNdc.project(camera);
-      const sx = (_tmpNdc.x * 0.5 + 0.5) * W;
-      const sy = (-_tmpNdc.y * 0.5 + 0.5) * H;
-
-      const dx = mx - sx;
-      const dy = my - sy;
-      const d2 = dx * dx + dy * dy;
-
-      let s = 0;
-      if (d2 < R2) s = 1 - Math.sqrt(d2) / R;
-      const ss = s * s;
-
-      const amb = Math.sin(t * 2.0 + c.seed) * 0.015;
-      const scale = 1 + amb + ss * 0.2;
-      c.mesh.scale.setScalar(scale);
-
-      // Same face-on policy as the hero — only Z rotation.
-      const rz = c.italicBase + Math.sin(t * 3.0 + c.seed) * ss * 0.04;
-      c.mesh.rotation.set(0, 0, rz);
+  // inner glowing disc
+  const grad = c.createRadialGradient(cx, cy, 0, cx, cy, r);
+  grad.addColorStop(0, col + 'aa');
+  grad.addColorStop(0.6, col + '22');
+  grad.addColorStop(1, col + '00');
+  c.fillStyle = grad;
+  c.beginPath();
+  c.arc(cx, cy, r, 0, Math.PI * 2);
+  c.fill();
+  // spectrum petals
+  if (state.analyser && state.analyserData) {
+    const bins = 96;
+    const step = Math.floor(state.analyserData.length / bins);
+    c.strokeStyle = col + 'cc';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    for (let i = 0; i < bins; i++) {
+      const v = state.analyserData[i * step] / 255;
+      viz.ring[i] = viz.ring[i] * 0.82 + v * 0.18;
+      const a = (i / bins) * Math.PI * 2 - Math.PI / 2;
+      const rr = r + 6 + viz.ring[i] * 80;
+      const px = cx + Math.cos(a) * rr;
+      const py = cy + Math.sin(a) * rr;
+      if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+    }
+    c.closePath();
+    c.stroke();
+  }
+  // samples as orbiting dots
+  const now = Date.now();
+  for (let i = 0; i < state.samples.length; i++) {
+    const s = state.samples[i];
+    const age = (now - s.recordedAt) / 1000;
+    const orbit = baseR * 1.6 + (i % 5) * 18;
+    const speed = 0.08 + (s.source === 'derived' ? 0.05 : 0.02);
+    const a = viz.phase * speed + i * 0.7;
+    const dx = cx + Math.cos(a) * orbit;
+    const dy = cy + Math.sin(a) * orbit * 0.55;
+    const dotR = 3 + s.survivalScore * 3;
+    const fadedColor = s.mutationLevel > 0.5 ? '#8a7f6c' : col;
+    c.fillStyle = fadedColor + 'cc';
+    c.beginPath();
+    c.arc(dx, dy, dotR, 0, Math.PI * 2);
+    c.fill();
+    if (s.lastPlayedAt && now - s.lastPlayedAt < 400) {
+      c.strokeStyle = col;
+      c.lineWidth = 1;
+      c.beginPath();
+      c.arc(dx, dy, dotR + (now - s.lastPlayedAt) * 0.08, 0, Math.PI * 2);
+      c.stroke();
+    }
+    if (age < 3) {
+      c.fillStyle = '#ffffff';
+      c.beginPath();
+      c.arc(dx, dy, 1.5, 0, Math.PI * 2);
+      c.fill();
     }
   }
 }
-
-// -----------------------------------------------------------
-// Raycasting for interactions
-// -----------------------------------------------------------
-const raycaster = new THREE.Raycaster();
-const ndc = new THREE.Vector2();
-
-function pickProduct() {
-  ndc.x = (state.mouse.x / state.width) * 2 - 1;
-  ndc.y = -(state.mouse.y / state.height) * 2 + 1;
-  raycaster.setFromCamera(ndc, camera);
-  // Gather all hit meshes
-  const hitMeshes = products.map((p) => p.userData.hitMesh).filter(Boolean);
-  const hits = raycaster.intersectObjects(hitMeshes, false);
-  if (hits.length === 0) return null;
-  // Find which product this mesh belongs to
-  const picked = hits[0].object;
-  for (const p of products) {
-    if (p.userData.hitMesh === picked) return p;
-    // Check children too
-    let found = false;
-    p.traverse((c) => { if (c === picked) found = true; });
-    if (found) return p;
-  }
-  return null;
+// ======== UI ========
+const el = (id) => document.getElementById(id);
+function fmtTime(ms) {
+  if (ms < 1000) return Math.floor(ms) + 'ms';
+  const s = ms / 1000;
+  if (s < 60) return s.toFixed(1) + 's';
+  const m = s / 60;
+  if (m < 60) return m.toFixed(1) + 'm';
+  return (m / 60).toFixed(1) + 'h';
 }
-
-// -----------------------------------------------------------
-// Grain overlay (regenerated every ~4 frames)
-// -----------------------------------------------------------
-const grainCanvas = document.getElementById("grain-canvas");
-const grainCtx = grainCanvas.getContext("2d");
-function resizeGrain() {
-  grainCanvas.width = Math.floor(state.width / 2);
-  grainCanvas.height = Math.floor(state.height / 2);
-  grainCanvas.style.width = state.width + "px";
-  grainCanvas.style.height = state.height + "px";
-}
-resizeGrain();
-function drawGrain() {
-  const w = grainCanvas.width;
-  const h = grainCanvas.height;
-  const img = grainCtx.createImageData(w, h);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const v = 200 + ((Math.random() * 55) | 0);
-    d[i] = v;
-    d[i + 1] = v;
-    d[i + 2] = v;
-    d[i + 3] = 60;
-  }
-  grainCtx.putImageData(img, 0, 0);
-}
-
-// -----------------------------------------------------------
-// Mouse & scroll
-// -----------------------------------------------------------
-window.addEventListener("mousemove", (e) => {
-  state.mouse.px = state.mouse.x;
-  state.mouse.py = state.mouse.y;
-  state.mouse.x = e.clientX;
-  state.mouse.y = e.clientY;
-  state.mouse.nx = (e.clientX / state.width) * 2 - 1;
-  state.mouse.ny = -(e.clientY / state.height) * 2 + 1;
-});
-
-// (scroll listener removed — the page no longer scrolls; navigation is
-// station-based via wheel/keys/arrows. bgUniforms.uScroll stays at 0.)
-
-window.addEventListener("resize", () => {
-  state.width = window.innerWidth;
-  state.height = window.innerHeight;
-  renderer.setSize(state.width, state.height);
-  bgRenderer.setSize(state.width, state.height);
-  camera.aspect = state.width / state.height;
-  camera.updateProjectionMatrix();
-  bgUniforms.uRes.value.set(state.width, state.height);
-  resizeGrain();
-  // Keep 3D text fitted to the new viewport
-  if (text3D.ready) {
-    layoutHero3D();
-    layoutMarquee3D();
-  }
-});
-
-// -----------------------------------------------------------
-// Click on canvas → raycast → open modal
-// -----------------------------------------------------------
-sceneCanvas.addEventListener("click", (e) => {
-  state.mouse.x = e.clientX;
-  state.mouse.y = e.clientY;
-  const picked = pickProduct();
-  if (picked) openProductModal(picked.userData.data);
-});
-
-// (projected HUD labels removed — station HUD panels now fade in
-// station-by-station, anchored to the viewport rather than following
-// 3D product screen positions. OPEN buttons are wired at the bottom
-// of this file via .station-open listeners.)
-
-// -----------------------------------------------------------
-// Modal (product detail)
-// -----------------------------------------------------------
-const modalEl = document.getElementById("modal");
-const modalInner = document.getElementById("modal-inner");
-const modalClose = document.getElementById("modal-close");
-
-let modalRenderer = null;
-let modalScene = null;
-let modalCamera = null;
-let modalProduct = null;
-let modalAnimId = null;
-
-function openProductModal(data) {
-  state.openProduct = data.id;
-  modalInner.innerHTML = `
-    <div class="modal-visual">
-      <canvas id="modal-canvas"></canvas>
-    </div>
-    <div class="modal-details">
-      <div class="md-num mono">// ${data.num}  ·  ${data.kana}</div>
-      <h2 class="md-name">
-        ${data.name}
-        <div class="md-name-kana">${data.kana}</div>
-      </h2>
-      <div class="md-desc">${data.desc}</div>
-      <div class="md-specs">
-        ${data.specs
-          .map(
-            ([k, v]) => `
-          <div class="md-spec-label mono">${k}</div>
-          <div class="md-spec-value mono">${v}</div>
-        `
-          )
-          .join("")}
-      </div>
-      <div class="md-price-row">
-        <div>
-          <div class="md-price-label mono">PRICE · ATELIER DIRECT</div>
-          <div class="md-price">${data.price}</div>
-          <div class="md-price-sub mono">${data.priceYen} · EX WORKS TOKYO</div>
-        </div>
-      </div>
-      <button class="md-buy"><span>RESERVE INSTRUMENT ⟶</span></button>
-    </div>
-  `;
-  modalEl.classList.add("open");
-  modalEl.setAttribute("aria-hidden", "false");
-
-  // Setup modal 3D preview
-  const mcanvas = document.getElementById("modal-canvas");
-  if (modalRenderer) modalRenderer.dispose();
-  modalRenderer = new THREE.WebGLRenderer({
-    canvas: mcanvas,
-    alpha: true,
-    antialias: true,
-  });
-  const mw = mcanvas.clientWidth;
-  const mh = mcanvas.clientHeight;
-  modalRenderer.setPixelRatio(state.dpr);
-  modalRenderer.setSize(mw, mh, false);
-
-  modalScene = new THREE.Scene();
-  modalCamera = new THREE.PerspectiveCamera(35, mw / mh, 0.1, 100);
-  modalCamera.position.set(0, 0, 6);
-
-  modalScene.add(new THREE.AmbientLight(0xffffff, 0.5));
-  const ml1 = new THREE.DirectionalLight(0xffffff, 1.1);
-  ml1.position.set(4, 4, 4);
-  modalScene.add(ml1);
-  const ml2 = new THREE.DirectionalLight(0xff6a2a, 0.5);
-  ml2.position.set(-3, 2, 3);
-  modalScene.add(ml2);
-
-  // Fresh instance of the product for the modal
-  modalProduct = productBuilders[data.id]();
-  modalProduct.scale.multiplyScalar(1.6);
-  modalScene.add(modalProduct);
-
-  cancelAnimationFrame(modalAnimId);
-  const t0 = performance.now();
-  function animateModal() {
-    const now = performance.now();
-    const t = (now - t0) / 1000;
-    modalProduct.rotation.y = t * 0.6;
-    modalProduct.rotation.x = Math.sin(t * 0.3) * 0.2;
-    modalProduct.traverse((o) => {
-      if (o.isMesh && o.material && o.material.uniforms) {
-        if (o.material.uniforms.uTime) o.material.uniforms.uTime.value = t;
-      }
-    });
-    // Modal product animation (mini clone of main loop motion)
-    animateProductLocal(modalProduct, t);
-    modalRenderer.render(modalScene, modalCamera);
-    modalAnimId = requestAnimationFrame(animateModal);
-  }
-  animateModal();
-
-  // Wire buy button to just pulse for now
-  const buyBtn = modalInner.querySelector(".md-buy");
-  buyBtn.addEventListener("click", () => {
-    buyBtn.querySelector("span").textContent = "RESERVED — CHECK YOUR EMAIL";
-    buyBtn.style.background = "var(--orange)";
-    buyBtn.style.borderColor = "var(--orange)";
-  });
-
-  // Resize modal canvas when visible
-  setTimeout(() => {
-    const w = mcanvas.clientWidth;
-    const h = mcanvas.clientHeight;
-    modalRenderer.setSize(w, h, false);
-    modalCamera.aspect = w / h;
-    modalCamera.updateProjectionMatrix();
-  }, 100);
-
-  // Split modal text into wiggleable chars
-  addModalWiggles();
-}
-
-function closeModal() {
-  modalEl.classList.remove("open");
-  modalEl.setAttribute("aria-hidden", "true");
-  state.openProduct = null;
-  cancelAnimationFrame(modalAnimId);
-  if (modalRenderer) {
-    modalRenderer.dispose();
-    modalRenderer = null;
-  }
-  // Drop the modal's char registry entries
-  wiggleState.chars = wiggleState.chars.filter((c) => !c.modalChar);
-}
-
-modalClose.addEventListener("click", closeModal);
-modalEl.querySelector(".modal-bg").addEventListener("click", closeModal);
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeModal();
-});
-
-// -----------------------------------------------------------
-// Per-product motion
-// -----------------------------------------------------------
-function animateProductLocal(group, t) {
-  const seed = group.userData.seed || 0;
-
-  if (group.userData.kind === "orb") {
-    group.rotation.y = t * 0.2 + seed;
-    group.rotation.x = Math.sin(t * 0.4 + seed) * 0.15;
-    // Rings slowly tumble
-    let ringIdx = 0;
-    group.children.forEach((c) => {
-      if (c.userData.orbit) {
-        c.rotation.x += 0.002 * c.userData.orbit.ax;
-        c.rotation.y += 0.002 * c.userData.orbit.ay;
-        c.rotation.z += 0.001;
-        ringIdx++;
-      }
-      if (c.userData.isBead) {
-        const a = t * 0.8 + seed;
-        c.position.set(
-          Math.cos(a) * 1.2,
-          Math.sin(a * 1.3) * 1.1,
-          Math.sin(a) * 1.2
-        );
-      }
-    });
-  }
-
-  if (group.userData.kind === "pillar") {
-    group.rotation.y = t * 0.25 + seed;
-    group.position.y = (group.userData.baseY || 0) + Math.sin(t * 0.6 + seed) * 0.08;
-  }
-
-  if (group.userData.kind === "ring") {
-    group.rotation.x = Math.PI * 0.35 + Math.sin(t * 0.4 + seed) * 0.15;
-    group.rotation.z = t * 0.3 + seed;
-    // Orbit drop around
-    group.children.forEach((c) => {
-      if (c.userData.isOrbit) {
-        const a = t * 1.5 + seed;
-        c.position.set(Math.cos(a) * 1.0, Math.sin(a * 0.6) * 0.2, Math.sin(a) * 1.0);
-      }
-    });
-  }
-
-  if (group.userData.kind === "spine") {
-    const segs = group.userData.segments;
-    if (segs) {
-      segs.forEach((s, i) => {
-        const phase = t * 1.2 + i * 0.45 + seed;
-        s.position.x = i * 0.42 - (segs.length - 1) * 0.21;
-        s.position.y = Math.sin(phase) * 0.18;
-        s.position.z = Math.cos(phase * 0.6) * 0.12;
-        s.rotation.z = Math.sin(phase) * 0.3;
-      });
-      group.rotation.y = t * 0.15 + seed;
-      group.rotation.z = Math.sin(t * 0.4 + seed) * 0.08;
-    }
-  }
-}
-
-// -----------------------------------------------------------
-// Cursor
-// -----------------------------------------------------------
-const cursorRing = document.getElementById("cursor-ring");
-const cursorDot = document.getElementById("cursor-dot");
-const cursorLabel = document.getElementById("cursor-label");
-const crosshair = document.getElementById("crosshair");
-const crosshairH = crosshair.querySelector(".crosshair-h");
-const crosshairV = crosshair.querySelector(".crosshair-v");
-const crosshairBox = crosshair.querySelector(".crosshair-box");
-const crosshairLabel = document.getElementById("crosshair-label");
-
-function updateCursor() {
-  const ease = 0.18;
-  const ringX = state.mouse.x;
-  const ringY = state.mouse.y;
-  cursorRing.style.transform = `translate(${ringX}px, ${ringY}px) translate(-50%,-50%)`;
-  cursorDot.style.transform = `translate(${state.mouse.x}px, ${state.mouse.y}px) translate(-50%,-50%)`;
-  cursorLabel.style.transform = `translate(${state.mouse.x + 18}px, ${state.mouse.y + 18}px)`;
-  // Crosshair
-  crosshairH.style.transform = `translateY(${state.mouse.y}px)`;
-  crosshairV.style.transform = `translateX(${state.mouse.x}px)`;
-  crosshairBox.style.transform = `translate(${state.mouse.x}px, ${state.mouse.y}px) translate(-50%, -50%)`;
-  const coordX = String(Math.round(state.mouse.x)).padStart(4, "0");
-  const coordY = String(Math.round(state.mouse.y)).padStart(4, "0");
-  crosshairLabel.textContent = `X${coordX} · Y${coordY}`;
-  crosshairLabel.style.transform = `translate(${state.mouse.x + 12}px, ${state.mouse.y + 12}px)`;
-}
-
-// -----------------------------------------------------------
-// Live readouts (top bar + side)
-// -----------------------------------------------------------
-const clockEl = document.getElementById("clock");
-const coordEl = document.getElementById("coord");
-const rTemp = document.getElementById("r-temp");
-const rPlasma = document.getElementById("r-plasma");
-const rFlow = document.getElementById("r-flow");
-const rHz = document.getElementById("r-hz");
-const rHue = document.getElementById("r-hue");
-const rSeed = document.getElementById("r-seed");
-
-function padL(n, w, c = "0") {
-  return String(n).padStart(w, c);
+function fmtClock() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
 }
 function updateReadouts() {
-  const d = new Date();
-  clockEl.textContent = `${padL(d.getHours(), 2)}:${padL(d.getMinutes(), 2)}:${padL(
-    d.getSeconds(),
-    2
-  )}`;
-
-  const t = state.time;
-  rTemp.textContent = (21.0 + Math.sin(t * 0.3) * 0.8 + (Math.random() - 0.5) * 0.1).toFixed(1) + "°C";
-  rPlasma.textContent = (0.8 + Math.sin(t * 0.4) * 0.08 + (Math.random() - 0.5) * 0.005).toFixed(3);
-  const flow = 1.0 + Math.sin(t * 0.2) * 0.4;
-  rFlow.textContent = (flow >= 1 ? "↗ " : "↘ ") + flow.toFixed(2);
-  rHz.textContent = (110 + Math.sin(t * 0.8) * 12).toFixed(2);
-  rHue.textContent = Math.round(15 + Math.sin(t * 0.1) * 8) + "°";
-  rSeed.textContent = (4291007 + Math.floor(Math.sin(t * 0.05) * 18000)).toLocaleString();
-}
-
-// (manifesto cells removed — their content is folded into station 5.)
-
-// -----------------------------------------------------------
-// Cursor state based on what's under it
-// -----------------------------------------------------------
-function updateCursorContext() {
-  // Pick product — if hit, show "OPEN"
-  const picked = pickProduct();
-  if (picked !== state.hovered) {
-    if (state.hovered) state.hovered.userData.hovered = false;
-    state.hovered = picked;
-    if (picked) {
-      picked.userData.hovered = true;
-      cursorRing.classList.add("active");
-      cursorLabel.textContent = `OPEN · ${picked.userData.data.name}`;
-      cursorLabel.classList.add("visible");
-    } else {
-      cursorRing.classList.remove("active");
-      cursorLabel.classList.remove("visible");
-    }
+  const g = state.genome;
+  el('clock').textContent = fmtClock();
+  el('r-genome').textContent = g.id.slice(0, 8);
+  el('r-gen').textContent = g.generation;
+  el('r-mood').textContent = state.mood;
+  el('r-state').textContent = state.awake ? 'awake' : 'asleep';
+  el('r-samples').textContent = state.samples.length;
+  el('r-wakes').textContent = g.activationCount;
+  el('r-age').textContent = fmtTime(Date.now() - g.birthday);
+  const now = Date.now();
+  let oldest = 0;
+  for (const s of state.samples) { const a = now - s.recordedAt; if (a > oldest) oldest = a; }
+  el('r-oldest').textContent = state.samples.length ? fmtTime(oldest) : '—';
+  if (state.awake) {
+    el('r-nextwake').textContent = 'in ' + fmtTime(state.awakeUntil - now) + ' → sleep';
+  } else {
+    el('r-nextwake').textContent = state.nextWakeAt ? fmtTime(Math.max(0, state.nextWakeAt - now)) : '—';
   }
+  const p = g.params;
+  el('p-grain').textContent = p.grainMinMs.toFixed(0) + '–' + p.grainMaxMs.toFixed(0);
+  el('p-pitch').textContent = p.pitchDrift.toFixed(3);
+  el('p-chop').textContent = p.chopProbability.toFixed(2);
+  el('p-wake').textContent = p.wakeMeanSeconds.toFixed(0) + 's';
+  el('p-rev').textContent = p.reverbAmount.toFixed(2);
+  el('p-dec').textContent = p.degradationRate.toFixed(4);
+  el('p-mel').textContent = p.melodicBias.toFixed(2);
 }
-
-// -----------------------------------------------------------
-// Hover tracking for nav / buttons via DOM
-// -----------------------------------------------------------
-document.querySelectorAll("a, button").forEach((el) => {
-  el.addEventListener("mouseenter", () => {
-    cursorRing.classList.add("active");
-  });
-  el.addEventListener("mouseleave", () => {
-    if (!state.hovered) cursorRing.classList.remove("active");
-  });
-});
-
-// -----------------------------------------------------------
-// Main animation loop
-// -----------------------------------------------------------
-let lastGrain = 0;
-let frame = 0;
-function animate() {
-  frame++;
-  state.time += 1 / 60;
-  const t = state.time;
-
-  // Smooth mouse velocity
-  state.mouse.vx = state.mouse.x - state.mouse.px;
-  state.mouse.vy = state.mouse.y - state.mouse.py;
-  state.mouse.px = state.mouse.x;
-  state.mouse.py = state.mouse.y;
-
-  // Background
-  bgUniforms.uTime.value = t;
-  bgUniforms.uMouse.value.set(
-    state.mouse.x / state.width,
-    1 - state.mouse.y / state.height
-  );
-
-  // Spatial dolly: smoothly drive camera Z toward current station's
-  // parked position, and the look-target toward its point of interest.
-  const target = STATIONS[currentStation];
-  const dollyEase = 0.055;
-  smoothCamZ += (target.camZ - smoothCamZ) * dollyEase;
-  smoothLookZ += (target.lookZ - smoothLookZ) * dollyEase;
-
-  // Mild mouse parallax on X/Y so the scene feels alive while parked
-  const tiltX = state.mouse.nx * 0.4;
-  const tiltY = state.mouse.ny * 0.3;
-  camera.position.x += (tiltX - camera.position.x) * 0.06;
-  camera.position.y += (tiltY - camera.position.y) * 0.06;
-  camera.position.z = smoothCamZ;
-  // Look at the current product's (x,y) or centered for void stations,
-  // at the station's look-Z. This lets asymmetric product offsets
-  // create a natural camera pan as we approach each station.
-  let lookX = 0, lookY = 0;
-  if (target.productIdx != null) {
-    const lp = layouts[target.productIdx].pos;
-    lookX = lp[0] * 0.6; // ease toward product's offset, not all the way
-    lookY = lp[1] * 0.6;
-  }
-  camera.lookAt(lookX, lookY, smoothLookZ);
-
-  // Animate each product
-  products.forEach((p, i) => {
-    p.userData.baseY = layouts[i].pos[1];
-    animateProductLocal(p, t);
-    // Hover: scale boost + liquid boost
-    const targetHover = p.userData.hovered ? 1 : 0;
-    p.userData.hoverSmooth = (p.userData.hoverSmooth || 0) +
-      (targetHover - (p.userData.hoverSmooth || 0)) * 0.1;
-    const hs = p.userData.hoverSmooth;
-    // Apply hover to shaders
-    p.traverse((c) => {
-      if (c.isMesh && c.material && c.material.uniforms) {
-        if (c.material.uniforms.uTime) c.material.uniforms.uTime.value = t;
-        if (c.material.uniforms.uHover) c.material.uniforms.uHover.value = hs;
-        if (c.material.uniforms.uMouse) {
-          c.material.uniforms.uMouse.value.set(state.mouse.nx, state.mouse.ny);
-        }
-      }
-    });
-    // Scale envelope
-    const scaleBase = layouts[i].scale;
-    const s = scaleBase * (1 + hs * 0.08);
-    p.scale.set(s, s, s);
-  });
-
-  // Cursor context
-  updateCursorContext();
-
-  // Render bg + scene
-  bgRenderer.render(bgScene, bgCamera);
-  renderer.render(scene, camera);
-
-  // Cursor / crosshair
-  updateCursor();
-
-  // Readouts
-  if (frame % 4 === 0) updateReadouts();
-
-  // Grain — regen every ~4 frames for a moving filmic feel
-  if (t - lastGrain > 0.066) {
-    drawGrain();
-    lastGrain = t;
-  }
-
-  // Text wiggles — every char responds to cursor proximity
-  updateWiggles(t);
-
-  // 3D hero title + 3D marquee — inflates, rotates, reflects
-  updateText3D(t);
-
-  requestAnimationFrame(animate);
-}
-// -----------------------------------------------------------
-// WIGGLES — every character of text reacts to cursor proximity.
-// Far away: crisp & readable.  Close: inflated, rotated, blurred,
-// chromatic-aberrated, glossy, dissolving.
-// -----------------------------------------------------------
-
-const WIGGLE_RADIUS = 240; // px — influence range around cursor
-
-// Elements whose text we leave alone (they update constantly with
-// textContent = ..., which would wipe any per-char span structure).
-const NO_WIGGLE_IDS = new Set([
-  "clock",
-  "crosshair-label",
-  "cursor-label",
-  "r-temp",
-  "r-plasma",
-  "r-flow",
-  "r-hz",
-  "r-hue",
-  "r-seed",
-]);
-
-const wiggleState = {
-  chars: [],
-  dirty: false,
-};
-
-function hasFixedAncestor(el) {
-  let p = el;
-  while (p && p !== document.body && p !== document.documentElement) {
+function wireControls() {
+  el('btn-record').addEventListener('click', async () => {
+    const btn = el('btn-record');
+    btn.classList.add('recording');
+    btn.textContent = '◉ recording…';
     try {
-      const pos = getComputedStyle(p).position;
-      if (pos === "fixed") return true;
-    } catch (_) {}
-    p = p.parentElement;
-  }
-  return false;
-}
-
-function hasMovingAncestor(el) {
-  // The marquee track is translated on each frame — we need to
-  // re-measure these chars live rather than trust a cache.
-  return !!(el.closest && el.closest(".marquee-track"));
-}
-
-function splitTextNode(tn) {
-  const out = [];
-  const text = tn.nodeValue;
-  const frag = document.createDocumentFragment();
-  for (const ch of text) {
-    if (ch === " " || ch === "\n" || ch === "\t") {
-      frag.appendChild(document.createTextNode(ch));
-    } else {
-      const s = document.createElement("span");
-      s.className = "char";
-      s.textContent = ch;
-      frag.appendChild(s);
-      out.push(s);
-    }
-  }
-  tn.parentNode.replaceChild(frag, tn);
-  return out;
-}
-
-function splitInside(root) {
-  const skipTags = new Set([
-    "SCRIPT",
-    "STYLE",
-    "NOSCRIPT",
-    "CANVAS",
-    "svg",
-    "SVG",
-  ]);
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(n) {
-      const p = n.parentElement;
-      if (!p) return NodeFilter.FILTER_REJECT;
-      if (skipTags.has(p.tagName)) return NodeFilter.FILTER_REJECT;
-      // Already split
-      if (p.classList && p.classList.contains("char"))
-        return NodeFilter.FILTER_REJECT;
-      // Blacklisted IDs (live-updating readouts)
-      if (p.id && NO_WIGGLE_IDS.has(p.id)) return NodeFilter.FILTER_REJECT;
-      // Skip if inside an svg anywhere
-      if (p.closest && p.closest("svg")) return NodeFilter.FILTER_REJECT;
-      // Skip pure whitespace
-      if (!n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
+      await recordBreath(3000);
+    } catch (e) { console.error(e); }
+    btn.classList.remove('recording');
+    btn.textContent = '◉ record breath';
   });
-  const nodes = [];
-  let n;
-  while ((n = walker.nextNode())) nodes.push(n);
-
-  const out = [];
-  for (const node of nodes) {
-    for (const s of splitTextNode(node)) out.push(s);
+  el('btn-wake').addEventListener('click', () => wake(true));
+  el('btn-sleep').addEventListener('click', () => sleep());
+  el('btn-evolve').addEventListener('click', () => evolveTick());
+  el('btn-wipe').addEventListener('click', async () => {
+    if (!confirm('Wipe this instrument? Genome + all samples erased.')) return;
+    try { await state.store.clear(); } catch (e) {}
+    localStorage.removeItem(LS_GENOME);
+    location.reload();
+  });
+  el('vol').addEventListener('input', (e) => {
+    if (state.master) state.master.gain.value = parseFloat(e.target.value);
+  });
+}
+// ======== BOOT ========
+let lastFrame = 0;
+function loop(t) {
+  const dt = Math.min(0.1, (t - lastFrame) / 1000 || 0);
+  lastFrame = t;
+  drawViz(dt);
+  updateReadouts();
+  const now = Date.now();
+  if (!state.awake && state.nextWakeAt && now >= state.nextWakeAt) wake();
+  if (state.awake && now >= state.awakeUntil) sleep();
+  if (now - state.lastEvolveAt > 30_000) evolveTick().catch(() => {});
+  // rare autonomous recording while asleep, if mic already granted
+  if (!state.awake && !state.recording && micStream && state.samples.length < 12 && Math.random() < 0.0008) {
+    autoRecord();
   }
-  return out;
+  requestAnimationFrame(loop);
 }
 
-function indexChar(el) {
-  // Balloon chars (hero title + footer marquee) get a stronger ambient
-  // breathe at rest so they visibly inflate / deflate even when the cursor
-  // is far away.
-  const balloon = !!(
-    el.closest && (el.closest(".hero-title") || el.closest(".foot-marquee"))
-  );
-  // Each balloon letter gets a permanent base pose — different resting
-  // depth + tilt per char — so the row always reads as a 3D scene of
-  // floating objects, never a flat line of text.
-  const baseTz = balloon ? (Math.random() - 0.5) * 40 : 0;
-  const baseRotY = balloon ? (Math.random() - 0.5) * 18 : 0;
-  const baseRotX = balloon ? (Math.random() - 0.5) * 12 : 0;
-  const c = {
-    el,
-    cx: 0,
-    cy: 0,
-    seed: Math.random() * 1000,
-    rotSeed: (Math.random() - 0.5) * 2,
-    fixed: hasFixedAncestor(el),
-    reread: hasMovingAncestor(el),
-    lastS: 0,
-    modalChar: false,
-    balloon,
-    baseTz,
-    baseRotY,
-    baseRotX,
+async function boot() {
+  state.genome = loadGenome();
+  state.prng = mulberry32((state.genome.seed ^ state.genome.generation) >>> 0);
+  viz.cv = document.getElementById('viz');
+  viz.ctx = viz.cv.getContext('2d');
+  resizeViz();
+  window.addEventListener('resize', resizeViz);
+  state.store = await openStore();
+  const all = await state.store.all();
+  state.samples = all.map(sampleMeta);
+  state.lastEvolveAt = Date.now();
+  scheduleNextWake();
+  initInput();
+  wireControls();
+  requestAnimationFrame((t) => { lastFrame = t; loop(t); });
+  // wait for user gesture before creating AudioContext
+  const status = document.getElementById('status');
+  const kick = async () => {
+    if (state.started) return;
+    state.started = true;
+    status.textContent = 'requesting mic…';
+    try {
+      await initAudio();
+      await ensureMic();
+      status.textContent = 'ready — press ◉ to record your first breath';
+      setTimeout(() => status.classList.add('hidden'), 1800);
+    } catch (e) {
+      console.error(e);
+      status.textContent = 'mic permission denied — click to retry';
+      state.started = false;
+    }
   };
-  // Paint the baseline pose immediately so even before the first
-  // animation frame touches this char, it's already posed in 3D.
-  if (balloon) {
-    el.style.transform =
-      `translate3d(0,0,${baseTz.toFixed(1)}px) ` +
-      `rotateX(${baseRotX.toFixed(1)}deg) rotateY(${baseRotY.toFixed(1)}deg)`;
-  }
-  return c;
+  document.getElementById('status').addEventListener('click', kick);
+  document.addEventListener('click', (e) => {
+    if (!state.started && e.target.closest('button, input')) kick();
+  }, true);
+  document.addEventListener('keydown', (e) => { if (!state.started) kick(); }, { once: true });
 }
 
-function clearCharStyles(entries) {
-  for (const c of entries) {
-    c.el.style.transform = "";
-    c.el.style.filter = "";
-    c.el.style.opacity = "";
-    c.el.style.textShadow = "";
-  }
-}
-
-function measureChars(entries) {
-  const sx = window.scrollX;
-  const sy = window.scrollY;
-  for (const c of entries) {
-    const r = c.el.getBoundingClientRect();
-    if (c.fixed || c.reread) {
-      c.cx = r.left + r.width / 2;
-      c.cy = r.top + r.height / 2;
-    } else {
-      c.cx = r.left + r.width / 2 + sx;
-      c.cy = r.top + r.height / 2 + sy;
-    }
-  }
-}
-
-function initWiggles() {
-  // 1. Tag existing per-letter spans (logo + hero title) with .char
-  const pre = document.querySelectorAll(
-    ".logo-roman > span, .logo-kana > span, .hero-title .line > span"
-  );
-  pre.forEach((el) => {
-    if (el.textContent.trim() && !el.classList.contains("char")) {
-      el.classList.add("char");
-    }
-  });
-
-  // 2. Walk the whole body and split every other text node
-  splitInside(document.body);
-
-  // 3. Index every .char on the page
-  const all = document.querySelectorAll(".char");
-  all.forEach((el) => {
-    if (el.textContent.trim()) {
-      wiggleState.chars.push(indexChar(el));
-    }
-  });
-
-  // 4. Clear inline styles (in case any were mid-animation), reflow,
-  //    then measure resting positions.
-  clearCharStyles(wiggleState.chars);
-  void document.body.offsetHeight;
-  measureChars(wiggleState.chars);
-
-  // 5. When fonts swap in, re-measure (text metrics may shift).
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(() => {
-      wiggleState.dirty = true;
-    });
-  }
-}
-
-function addModalWiggles() {
-  // Drop any previous modal entries (we rebuild on each open)
-  wiggleState.chars = wiggleState.chars.filter((c) => !c.modalChar);
-  // Split modal innards
-  const fresh = splitInside(modalInner);
-  const batch = [];
-  fresh.forEach((el) => {
-    const entry = indexChar(el);
-    entry.fixed = true; // modal is position: fixed
-    entry.modalChar = true;
-    wiggleState.chars.push(entry);
-    batch.push(entry);
-  });
-  clearCharStyles(batch);
-  // Measure on next frame so modal is laid out
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => measureChars(batch));
-  });
-}
-
-function updateWiggles(t) {
-  // Re-measure everything when layout might have changed
-  if (wiggleState.dirty) {
-    clearCharStyles(wiggleState.chars);
-    void document.body.offsetHeight;
-    measureChars(wiggleState.chars);
-    wiggleState.dirty = false;
-  }
-
-  const mx = state.mouse.x;
-  const my = state.mouse.y;
-  const sx = window.scrollX;
-  const sy = window.scrollY;
-  const R = WIGGLE_RADIUS;
-  const R2 = R * R;
-  const ambFreq = 2.0;
-
-  const N = wiggleState.chars.length;
-  for (let i = 0; i < N; i++) {
-    const c = wiggleState.chars[i];
-
-    // Chars inside a moving parent (marquee) need live rect reads.
-    if (c.reread) {
-      const r = c.el.getBoundingClientRect();
-      c.cx = r.left + r.width / 2;
-      c.cy = r.top + r.height / 2;
-    }
-
-    const ccx = c.fixed || c.reread ? c.cx : c.cx - sx;
-    const ccy = c.fixed || c.reread ? c.cy : c.cy - sy;
-
-    const dx = mx - ccx;
-    const dy = my - ccy;
-    const d2 = dx * dx + dy * dy;
-
-    if (d2 > R2) {
-      // Out of effect range — just ambient breath, and only write
-      // when we were previously wiggling OR on a lazy stagger schedule.
-      // Balloon chars (hero + marquee) breathe much harder — they're
-      // inflated letters that visibly pulse + bob in 3D space.
-      const ambAmp = c.balloon ? 0.045 : 0.015;
-      if (c.lastS > 0.005) {
-        const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
-        const style = c.el.style;
-        if (c.balloon) {
-          // 3D resting: base pose + gentle bob in Z + subtle tilt
-          const tz = c.baseTz + Math.sin(t * 0.9 + c.seed) * 22;
-          const rotY = c.baseRotY + Math.sin(t * 1.1 + c.seed * 0.7) * 7;
-          const rotX = c.baseRotX + Math.cos(t * 0.85 + c.seed * 0.5) * 5;
-          style.transform =
-            `translate3d(0,0,${tz.toFixed(1)}px) ` +
-            `rotateX(${rotX.toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) ` +
-            `scale(${(1 + amb).toFixed(4)})`;
-        } else {
-          style.transform = `scale(${(1 + amb).toFixed(4)})`;
-        }
-        style.filter = "";
-        style.opacity = "";
-        style.textShadow = "";
-        c.lastS = 0;
-      } else if (c.balloon || i % 90 === (frame || 0) % 90) {
-        // Balloons animate every frame, others lazy-stagger
-        const amb = Math.sin(t * ambFreq + c.seed) * ambAmp;
-        if (c.balloon) {
-          const tz = c.baseTz + Math.sin(t * 0.9 + c.seed) * 22;
-          const rotY = c.baseRotY + Math.sin(t * 1.1 + c.seed * 0.7) * 7;
-          const rotX = c.baseRotX + Math.cos(t * 0.85 + c.seed * 0.5) * 5;
-          c.el.style.transform =
-            `translate3d(0,0,${tz.toFixed(1)}px) ` +
-            `rotateX(${rotX.toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) ` +
-            `scale(${(1 + amb).toFixed(4)})`;
-        } else {
-          c.el.style.transform = `scale(${(1 + amb).toFixed(4)})`;
-        }
-      }
-      continue;
-    }
-
-    const d = Math.sqrt(d2);
-    const s = 1 - d / R; // 0..1, 1 = cursor dead on char
-    const ss = s * s; // sharpen falloff
-    const sss = ss * s; // even sharper for blur/gloss
-    c.lastS = s;
-
-    // Unit vector pointing AWAY from cursor
-    const invD = 1 / (d + 0.5);
-    const dirX = -dx * invD;
-    const dirY = -dy * invD;
-
-    // Push (repulsion) + wiggle jitter (high-freq sin)
-    const push = ss * 30;
-    const wf = 5 + (c.seed % 3);
-    const wigAmp = ss * 14;
-    const wigX = Math.sin(t * wf + c.seed) * wigAmp;
-    const wigY = Math.cos(t * (wf + 0.3) + c.seed * 1.7) * wigAmp;
-
-    // Rotation: random per-char bias + flicker
-    const rot =
-      c.rotSeed * ss * 55 + Math.sin(t * 9 + c.seed) * ss * 28;
-
-    // Inflate + ambient breath
-    const amb = Math.sin(t * ambFreq + c.seed) * 0.015;
-    const scale = 1 + amb + ss * 1.4;
-
-    // Blur for dissolve
-    const blur = sss * 9;
-
-    // Opacity drop — never fully invisible so mass is still felt
-    const opacity = 1 - ss * 0.45;
-
-    // Gloss: chromatic aberration + white bloom
-    const caX = ss * 5;
-    const caY = ss * 2;
-    const bloom = sss * 3;
-
-    const tx = dirX * push + wigX;
-    const ty = dirY * push + wigY;
-
-    const style = c.el.style;
-    if (c.balloon) {
-      // Balloon chars live in a 3D scene — push toward/away from camera
-      // (translateZ), tilt toward the cursor (rotateX/Y). Base pose
-      // (per-letter permanent depth + tilt) blends with proximity drive.
-      const tz = c.baseTz + ss * 90 + amb * 300; // pop forward on proximity
-      const rotY = c.baseRotY + dirX * ss * 40 + Math.sin(t * 1.3 + c.seed) * 8;
-      const rotX = c.baseRotX + -dirY * ss * 40 + Math.cos(t * 1.1 + c.seed) * 6;
-      style.transform =
-        "translate3d(" +
-        tx.toFixed(1) +
-        "px," +
-        ty.toFixed(1) +
-        "px," +
-        tz.toFixed(1) +
-        "px) rotateX(" +
-        rotX.toFixed(1) +
-        "deg) rotateY(" +
-        rotY.toFixed(1) +
-        "deg) rotateZ(" +
-        rot.toFixed(1) +
-        "deg) scale(" +
-        scale.toFixed(3) +
-        ")";
-    } else {
-      style.transform =
-        "translate(" +
-        tx.toFixed(1) +
-        "px," +
-        ty.toFixed(1) +
-        "px) scale(" +
-        scale.toFixed(3) +
-        ") rotate(" +
-        rot.toFixed(1) +
-        "deg)";
-    }
-    style.filter = blur > 0.15 ? "blur(" + blur.toFixed(2) + "px)" : "";
-    style.opacity = opacity.toFixed(3);
-    style.textShadow =
-      ss > 0.03
-        ? "0 0 " +
-          bloom.toFixed(1) +
-          "px rgba(255,255,255," +
-          (ss * 0.7).toFixed(2) +
-          ")," +
-          caX.toFixed(1) +
-          "px " +
-          caY.toFixed(1) +
-          "px 0 rgba(255,69,0," +
-          (ss * 0.85).toFixed(2) +
-          ")," +
-          (-caX).toFixed(1) +
-          "px " +
-          (-caY).toFixed(1) +
-          "px 0 rgba(10,150,230," +
-          (ss * 0.45).toFixed(2) +
-          ")"
-        : "";
-  }
-}
-
-// Layout changes → remeasure. NOTE: scroll does NOT dirty — positions
-// are stored as page coords and we subtract scrollY in the hot loop.
-// Re-measuring every scroll event would tank perf in heavy text areas.
-window.addEventListener("resize", () => {
-  wiggleState.dirty = true;
-});
-
-// Kick off the whole system once the DOM is parsed
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initWiggles);
-} else {
-  initWiggles();
-}
-
-drawGrain();
-animate();
-
-// -----------------------------------------------------------
-// STATION NAVIGATION — forward/back through the Z-corridor.
-// Inputs: wheel, arrow keys, space, PageUp/PageDown, HUD buttons,
-// progress dots, top-bar nav links. All funnel into goToStation().
-// -----------------------------------------------------------
-const stationHudEls = Array.from(document.querySelectorAll(".station-hud"));
-const stationDotEls = Array.from(document.querySelectorAll(".sdot"));
-const sindNumEl = document.getElementById("sind-num");
-const sindZEl = document.getElementById("sind-z");
-const navPrevEl = document.getElementById("nav-prev");
-const navNextEl = document.getElementById("nav-next");
-
-function updateStationUi() {
-  for (const el of stationHudEls) {
-    const sn = parseInt(el.dataset.station, 10);
-    el.classList.toggle("active", sn === currentStation);
-  }
-  for (const el of stationDotEls) {
-    const sn = parseInt(el.dataset.station, 10);
-    el.classList.toggle("active", sn === currentStation);
-  }
-  if (sindNumEl) {
-    sindNumEl.textContent = String(currentStation).padStart(2, "0");
-  }
-  if (sindZEl) {
-    const z = STATIONS[currentStation].camZ;
-    sindZEl.textContent = "Z " + (z >= 0 ? "+" : "") + z.toFixed(1);
-  }
-  if (navPrevEl) navPrevEl.disabled = currentStation === 0;
-  if (navNextEl) navNextEl.disabled = currentStation === STATIONS.length - 1;
-}
-
-function goToStation(n) {
-  const clamped = Math.max(0, Math.min(STATIONS.length - 1, n | 0));
-  if (clamped === currentStation) return;
-  currentStation = clamped;
-  updateStationUi();
-}
-
-// Paint the initial state
-updateStationUi();
-
-function isModalOpen() {
-  return modalEl && modalEl.classList.contains("open");
-}
-
-// --- Wheel / trackpad: one station per gesture, locked for 650ms ---
-let wheelBusy = false;
-window.addEventListener(
-  "wheel",
-  (e) => {
-    // Always prevent native scroll — the page is non-scrollable
-    e.preventDefault();
-    if (isModalOpen()) return;
-    if (wheelBusy) return;
-    if (Math.abs(e.deltaY) < 6) return;
-    wheelBusy = true;
-    setTimeout(() => {
-      wheelBusy = false;
-    }, 650);
-    goToStation(currentStation + (e.deltaY > 0 ? 1 : -1));
-  },
-  { passive: false }
-);
-
-// --- Keyboard: arrows, space, PageUp/Down ---
-window.addEventListener("keydown", (e) => {
-  // Don't intercept typing inside the modal (future-proof)
-  const tag = (document.activeElement && document.activeElement.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
-  // Let Escape reach the modal close handler; don't navigate when open
-  if (isModalOpen()) return;
-  if (
-    e.key === "ArrowRight" ||
-    e.key === "ArrowDown" ||
-    e.key === "PageDown" ||
-    e.key === " "
-  ) {
-    e.preventDefault();
-    goToStation(currentStation + 1);
-  } else if (
-    e.key === "ArrowLeft" ||
-    e.key === "ArrowUp" ||
-    e.key === "PageUp"
-  ) {
-    e.preventDefault();
-    goToStation(currentStation - 1);
-  } else if (e.key === "Home") {
-    e.preventDefault();
-    goToStation(0);
-  } else if (e.key === "End") {
-    e.preventDefault();
-    goToStation(STATIONS.length - 1);
-  }
-});
-
-// --- Prev/Next buttons ---
-if (navPrevEl) {
-  navPrevEl.addEventListener("click", () => goToStation(currentStation - 1));
-}
-if (navNextEl) {
-  navNextEl.addEventListener("click", () => goToStation(currentStation + 1));
-}
-
-// --- Progress dots ---
-for (const el of stationDotEls) {
-  el.addEventListener("click", () => {
-    const n = parseInt(el.dataset.station, 10);
-    if (!Number.isNaN(n)) goToStation(n);
-  });
-}
-
-// --- Top-bar nav links ---
-document.querySelectorAll(".top-bar .nav a[data-station]").forEach((el) => {
-  el.addEventListener("click", (e) => {
-    e.preventDefault();
-    const s = parseInt(el.dataset.station, 10);
-    if (!Number.isNaN(s)) goToStation(s);
-  });
-});
-
-// --- Station OPEN buttons → product modal ---
-document.querySelectorAll(".station-open").forEach((el) => {
-  el.addEventListener("click", () => {
-    const pi = parseInt(el.dataset.product, 10);
-    if (!Number.isNaN(pi) && PRODUCTS[pi]) openProductModal(PRODUCTS[pi]);
-  });
-});
-
-// --- Touch swipe (basic vertical swipe → station change) ---
-let touchStartY = null;
-window.addEventListener(
-  "touchstart",
-  (e) => {
-    if (isModalOpen()) return;
-    if (e.touches.length === 1) touchStartY = e.touches[0].clientY;
-  },
-  { passive: true }
-);
-window.addEventListener(
-  "touchend",
-  (e) => {
-    if (touchStartY == null) return;
-    const endY =
-      (e.changedTouches && e.changedTouches[0] && e.changedTouches[0].clientY) ||
-      touchStartY;
-    const dy = touchStartY - endY;
-    touchStartY = null;
-    if (Math.abs(dy) < 40) return;
-    if (isModalOpen()) return;
-    goToStation(currentStation + (dy > 0 ? 1 : -1));
-  },
-  { passive: true }
-);
-
-// -----------------------------------------------------------
-// Hover-reset when mouse leaves window
-// -----------------------------------------------------------
-window.addEventListener("mouseleave", () => {
-  if (state.hovered) {
-    state.hovered.userData.hovered = false;
-    state.hovered = null;
-  }
-  cursorRing.classList.remove("active");
-  cursorLabel.classList.remove("visible");
-});
-
-// -----------------------------------------------------------
-// Intro reveal
-// -----------------------------------------------------------
-document.body.style.opacity = "0";
-document.body.style.transition = "opacity 1.2s ease";
-requestAnimationFrame(() => {
-  document.body.style.opacity = "1";
-});
+boot();

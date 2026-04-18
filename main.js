@@ -248,8 +248,18 @@ async function initAudio() {
   lfo.connect(lfoGain);
   lfoGain.connect(perfFilter.frequency);
   lfo.start();
-  // routing out
-  master.connect(analyser);
+  // Gentle limiter on the master so occasional loud grains never clip or
+  // dominate. -12 dB threshold with a 20 dB soft knee and 3:1 ratio — we
+  // barely hear compression working, it just caps peaks.
+  const masterComp = ctx.createDynamicsCompressor();
+  masterComp.threshold.value = -12;
+  masterComp.knee.value = 20;
+  masterComp.ratio.value = 3;
+  masterComp.attack.value = 0.005;
+  masterComp.release.value = 0.12;
+  // routing out: master -> compressor -> analyser -> destination
+  master.connect(masterComp);
+  masterComp.connect(analyser);
   analyser.connect(ctx.destination);
   revSend.connect(convolver);
   convolver.connect(master);
@@ -284,15 +294,16 @@ async function initAudio() {
 // ======== INSTRUMENTS (soft, rotating, sit way under the vocal) ========
 // Three flavours: soft pad (warm triangle pad), flute (sine + breath noise),
 // glass (bell-like inharmonic sines). One is selected per section.
-const INSTRUMENTS = ['soft_pad', 'flute', 'glass'];
+const INSTRUMENTS = ['soft_pad', 'flute', 'glass', 'marimba'];
 
 function scheduleInstrumentNote(when, semis, durationMs, vel = 0.35, kind = null) {
   const ctx = state.ctx;
   if (!ctx || !state.instBus) return;
   const which = kind || state.currentInstrument || 'soft_pad';
-  if (which === 'flute')   playFlute(when, semis, durationMs, vel);
-  else if (which === 'glass') playGlass(when, semis, durationMs, vel);
-  else                      playSoftPad(when, semis, durationMs, vel);
+  if (which === 'flute')        playFlute(when, semis, durationMs, vel);
+  else if (which === 'glass')   playGlass(when, semis, durationMs, vel);
+  else if (which === 'marimba') playMarimba(when, semis, durationMs, vel);
+  else                          playSoftPad(when, semis, durationMs, vel);
 }
 
 function playSoftPad(when, semis, durationMs, vel) {
@@ -365,6 +376,44 @@ function playFlute(when, semis, durationMs, vel) {
   osc.start(t0); osc.stop(t0 + dur + 0.05);
   nSrc.start(t0); nSrc.stop(t0 + nLen / ctx.sampleRate + 0.02);
   osc.onended = () => { try { osc.disconnect(); env.disconnect(); pan.disconnect(); lp.disconnect(); nGain.disconnect(); } catch (e) {} };
+}
+
+function playMarimba(when, semis, durationMs, vel) {
+  // Wooden mallet tone: sine fundamental with a sharp attack + fast decay
+  // plus a quieter octave-up partial for that hollow marimba ring. A touch
+  // of pitch-envelope on the attack gives it the characteristic "thunk".
+  const ctx = state.ctx;
+  const baseHz = 330 * Math.pow(2, semis / 12);   // A bit lower than flute
+  const dur = Math.max(0.25, Math.min(0.9, (durationMs / 1000) * 1.1));
+  const t0 = Math.max(when, ctx.currentTime + 0.001);
+  const o1 = ctx.createOscillator(); o1.type = 'sine'; o1.frequency.setValueAtTime(baseHz * 1.08, t0);
+  o1.frequency.exponentialRampToValueAtTime(baseHz, t0 + 0.018);
+  const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = baseHz * 4;
+  const o3 = ctx.createOscillator(); o3.type = 'sine'; o3.frequency.value = baseHz * 6;
+  const e1 = ctx.createGain();
+  e1.gain.setValueAtTime(0.001, t0);
+  e1.gain.exponentialRampToValueAtTime(vel * 1.0, t0 + 0.004);
+  e1.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  const e2 = ctx.createGain();
+  e2.gain.setValueAtTime(0.001, t0);
+  e2.gain.exponentialRampToValueAtTime(vel * 0.32, t0 + 0.003);
+  e2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
+  const e3 = ctx.createGain();
+  e3.gain.setValueAtTime(0.001, t0);
+  e3.gain.exponentialRampToValueAtTime(vel * 0.14, t0 + 0.002);
+  e3.gain.exponentialRampToValueAtTime(0.001, t0 + 0.07);
+  // A gentle lowpass rounds the harsher upper harmonics
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3600; lp.Q.value = 0.7;
+  const pan = ctx.createStereoPanner(); pan.pan.value = (Math.random() * 2 - 1) * 0.35;
+  o1.connect(e1);
+  o2.connect(e2);
+  o3.connect(e3);
+  e1.connect(lp); e2.connect(lp); e3.connect(lp);
+  lp.connect(pan); pan.connect(state.instBus);
+  o1.start(t0); o1.stop(t0 + dur + 0.05);
+  o2.start(t0); o2.stop(t0 + 0.18);
+  o3.start(t0); o3.stop(t0 + 0.1);
+  o1.onended = () => { try { o1.disconnect(); o2.disconnect(); o3.disconnect(); e1.disconnect(); e2.disconnect(); e3.disconnect(); lp.disconnect(); pan.disconnect(); } catch (e) {} };
 }
 
 function playGlass(when, semis, durationMs, vel) {
@@ -527,6 +576,22 @@ function rateForDegreeOnSample(degree, sampleHz, octaveBias = 0) {
   return rateForTarget(sampleHz, targetHz, octaveBias);
 }
 // ======== RECORDER ========
+// Peak-normalize a PCM buffer in place so its loudest sample sits at
+// `targetPeak`. Only scales DOWN — leaves quieter recordings alone so we
+// don't amplify noise floors. Returns the scale factor applied (1 if
+// untouched).
+function normalizePcmInPlace(pcm, targetPeak = 0.8) {
+  if (!pcm || !pcm.length) return 1;
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    const a = Math.abs(pcm[i]);
+    if (a > peak) peak = a;
+  }
+  if (peak <= targetPeak) return 1;
+  const factor = targetPeak / peak;
+  for (let i = 0; i < pcm.length; i++) pcm[i] *= factor;
+  return factor;
+}
 let micStream = null;
 async function ensureMic() {
   if (micStream) return micStream;
@@ -551,6 +616,11 @@ async function recordBreath(durMs = 3000) {
     const ab = await blob.arrayBuffer();
     const audioBuf = await state.ctx.decodeAudioData(ab);
     const pcm = audioBuf.getChannelData(0).slice();
+    // Peak-normalize loud recordings so a shouted breath doesn't dominate
+    // quiet ones.  Only scale DOWN (factor < 1) — we don't want to boost
+    // quiet samples and amplify their noise floor. Target peak 0.8 is
+    // "pretty hot but not clipping".
+    normalizePcmInPlace(pcm, 0.8);
     // Run YIN pitch detection so we can pitch-correct playback. Synchronous
     // but fast (~20-40ms for 2048 samples); acceptable at record time.
     const detectedHz = detectHz(pcm, audioBuf.sampleRate);
@@ -650,20 +720,25 @@ function triggerGrain(rec, opts) {
     else bq.type = mutation > 0.4 ? 'lowpass' : 'lowpass';
     let freq = filterHz;
     if (freq == null) {
-      if (layer === 'ambient') freq = 600 + Math.random() * 1200;
-      else freq = Math.max(500, 16000 * (1 - mutation * 0.85));
+      if (layer === 'ambient') freq = 700 + Math.random() * 1200;
+      // Decay lowpass: less aggressive than before. At mutation=1 the floor
+      // is 2.5 kHz (was 2.4 kHz but the old slope darkened more quickly);
+      // the max attenuation factor drops 0.85 -> 0.6.
+      else freq = Math.max(1400, 16000 * (1 - mutation * 0.6));
     }
     bq.frequency.value = freq;
-    bq.Q.value = filterQ != null ? filterQ : (bq.type === 'bandpass' ? 2.5 : 0.6);
+    bq.Q.value = filterQ != null ? filterQ : (bq.type === 'bandpass' ? 2.5 : 0.55);
     env.connect(bq);
     tail = bq;
   }
-  // Bitcrush / waveshaper for heavy mutation — softer than before: only
-  // kicks in on truly old samples (>0.7) and at about half the previous
-  // rate, and never crushes below 4 bits so the grit stays tasteful.
-  if (mutation > 0.7 && Math.random() < 0.35) {
+  // Bitcrush — now quite gentle.  Only very old samples (mutation > 0.8)
+  // and only ~20% of those, and never below 6 bits (64 steps) so the grit
+  // is mostly a soft texture rather than an interruption.  Wet-only output
+  // is blended against the dry tail via a 55/45 wet-dry mix so even when
+  // it fires, the original signal is mostly intact.
+  if (mutation > 0.8 && Math.random() < 0.2) {
     const ws = ctx.createWaveShaper();
-    const bits = Math.max(4, Math.floor(9 - mutation * 5));
+    const bits = Math.max(6, Math.floor(11 - mutation * 5));
     const steps = Math.pow(2, bits);
     const curve = new Float32Array(1024);
     for (let i = 0; i < 1024; i++) {
@@ -671,8 +746,12 @@ function triggerGrain(rec, opts) {
       curve[i] = Math.round(x * steps) / steps;
     }
     ws.curve = curve;
-    tail.connect(ws);
-    tail = ws;
+    const wet = ctx.createGain(); wet.gain.value = 0.45;
+    const dry = ctx.createGain(); dry.gain.value = 0.55;
+    const merge = ctx.createGain();
+    tail.connect(ws); ws.connect(wet); wet.connect(merge);
+    tail.connect(dry); dry.connect(merge);
+    tail = merge;
   }
   src.connect(env);
   tail.connect(panner);
@@ -917,9 +996,14 @@ function pickSection() {
     state.melodyVoices.counterId = counter ? counter.id : null;
     state.melodyVoices.counterOffset = state.prng() < 0.7 ? 2 : 4;
   }
-  // Rotate the backing instrument per section, weighted toward soft_pad.
+  // Rotate the backing instrument per section. soft_pad is most common
+  // because it blends quietly under vocals; marimba is the punchy pop
+  // option; glass is the rare bell moment.
   const ir = state.prng();
-  state.currentInstrument = ir < 0.5 ? 'soft_pad' : ir < 0.85 ? 'flute' : 'glass';
+  state.currentInstrument = ir < 0.4 ? 'soft_pad'
+                          : ir < 0.7 ? 'marimba'
+                          : ir < 0.9 ? 'flute'
+                          : 'glass';
   // New melody line for this section — the hook.
   pickMelodyLine();
   // Reassign the three continuous arpeggiator voices.
@@ -1662,6 +1746,45 @@ function wireControls() {
       if (state.started) syncCloudSamples().catch(() => {});
     });
   }
+  // Import instrument: paste a UUID and press Enter. The local IDB cache is
+  // cleared so old samples don't mix with the new pool; the page reloads
+  // and boot pulls the freshly-referenced instrument from the cloud.
+  const importInput = el('r-import-input');
+  if (importInput) {
+    importInput.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      const raw = (importInput.value || '').trim();
+      if (!raw) return;
+      const uuidLike = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (!uuidLike.test(raw)) {
+        importInput.style.borderColor = 'var(--warn)';
+        importInput.value = '';
+        importInput.placeholder = 'not a valid id';
+        setTimeout(() => { importInput.placeholder = 'paste id + enter'; importInput.style.borderColor = ''; }, 1600);
+        return;
+      }
+      if (!confirm('Switch this browser to instrument ' + raw.slice(0, 8) + '…? Your local sample cache will be cleared.')) return;
+      try {
+        // Write a placeholder genome record so boot knows the id it should pull.
+        // Params/generation get overwritten by syncCloudGenome on boot.
+        const placeholder = {
+          id: raw,
+          seed: (Math.random() * 4294967296) >>> 0,
+          birthday: Date.now(),
+          params: state.genome ? state.genome.params : {},
+          generation: 0,
+          activationCount: 0,
+        };
+        localStorage.setItem(LS_GENOME, JSON.stringify(placeholder));
+        // Wipe the local sample cache so old samples don't leak into the new instrument.
+        if (state.store) { try { await state.store.clear(); } catch (e) {} }
+        location.reload();
+      } catch (e) {
+        console.error('import failed', e);
+        alert('Import failed: ' + e.message);
+      }
+    });
+  }
 }
 // ======== BOOT ========
 let lastFrame = 0;
@@ -1737,6 +1860,9 @@ async function syncCloudSamples() {
       const audioBuf = await state.ctx.decodeAudioData(ab).catch(() => null);
       if (!audioBuf) continue;
       const pcm = audioBuf.getChannelData(0).slice();
+      // Cloud samples uploaded by older builds aren't peak-normalised.
+      // Apply the same 0.8 ceiling so remote + local samples behave alike.
+      normalizePcmInPlace(pcm, 0.8);
       // Use the pitch the sample row already carries; otherwise run YIN now
       // and push the result back so no one else has to redo the work.
       let detectedHz = rs.detected_hz != null ? Number(rs.detected_hz) : null;

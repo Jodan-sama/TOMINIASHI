@@ -980,9 +980,14 @@ function pickMelodyLine() {
   // 16-step patterns fit 1 bar at 16ths OR 2 bars at 8ths.
   // Occasionally we pick 16ths so the melody moves very fast (Max-Cooper-ish).
   const sub = state.prng() < 0.55 ? 8 : 16;
-  // Melody octave drifts slightly per section so the tune doesn't stay in
-  // one register forever.
-  const oct = state.prng() < 0.2 ? -1 : 0;
+  // Melody octave drifts per section so the tune doesn't live in one
+  // register.  More lower-octave exploration than before (the brighter
+  // instruments were crowding the top otherwise).
+  const octRoll = state.prng();
+  const oct = octRoll < 0.1 ? -2
+            : octRoll < 0.5 ? -1
+            : octRoll < 0.9 ? 0
+            : 1;
   state.melodyLine = {
     pattern: patt,
     subdiv: sub,
@@ -1043,13 +1048,13 @@ function pickSection() {
     state.melodyVoices.counterId = counter ? counter.id : null;
     state.melodyVoices.counterOffset = state.prng() < 0.7 ? 2 : 4;
   }
-  // Rotate the backing instrument per section. soft_pad is most common
-  // because it blends quietly under vocals; marimba is the punchy pop
-  // option; glass is the rare bell moment.
+  // Rotate the backing instrument per section. Marimba leads the rotation
+  // now — woody + punchy + pop-friendly.  soft_pad is second for its
+  // blendable warmth. Flute and glass are the bright spice.
   const ir = state.prng();
-  state.currentInstrument = ir < 0.4 ? 'soft_pad'
-                          : ir < 0.7 ? 'marimba'
-                          : ir < 0.9 ? 'flute'
+  state.currentInstrument = ir < 0.45 ? 'marimba'
+                          : ir < 0.75 ? 'soft_pad'
+                          : ir < 0.92 ? 'flute'
                           : 'glass';
   // New melody line for this section — the hook.
   pickMelodyLine();
@@ -1075,9 +1080,18 @@ function pickArps() {
   const sub1 = 16;
   const sub2 = subdivChoice < 0.25 ? 8 : 16;
   const sub3 = subdivChoice < 0.4 ? 32 : subdivChoice < 0.8 ? 16 : 8;
-  const oct2Desired = state.prng() < 0.3 ? -1 : 0;
-  // Ornament voice wants to sit higher. We'll clamp per-instrument below.
-  const oct3Desired = state.prng() < 0.2 ? 2 : 1;
+  // Voice 1 (counter) now explores lower registers more often — 20% bass,
+  // 45% -1 oct, 35% middle. Nothing above 0 here, keeps it warm.
+  const oct2Roll = state.prng();
+  const oct2Desired = oct2Roll < 0.2 ? -2 : oct2Roll < 0.65 ? -1 : 0;
+  // Voice 2 (ornament) usually sits high, but 15% of the time it DROPS an
+  // octave for a surprising dark-ornament flavour. Clamped per-instrument
+  // below so flute/glass still stay below the ear-piercing zone.
+  const oct3Roll = state.prng();
+  const oct3Desired = oct3Roll < 0.15 ? -1
+                    : oct3Roll < 0.45 ? 0
+                    : oct3Roll < 0.9  ? 1
+                    : 2;
   const poppyTop = Math.min(6, ARP_PATTERNS.length);
   const pat1 = ARP_PATTERNS[Math.floor(state.prng() * poppyTop)];
   const pat2 = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
@@ -1087,9 +1101,17 @@ function pickArps() {
   const vocalSample = state.samples.length
     ? pickSamplesForMood(state.mood)[Math.floor(state.prng() * Math.max(1, pickSamplesForMood(state.mood).length))]
     : null;
-  const shuffled = INSTRUMENTS.slice().sort(() => state.prng() - 0.5);
-  const inst1 = shuffled[0];
-  const inst2 = shuffled[1] || shuffled[0];
+  // Weighted instrument picker mirrors pickSection's bias toward marimba.
+  const pickInst = () => {
+    const r = state.prng();
+    if (r < 0.45) return 'marimba';
+    if (r < 0.72) return 'soft_pad';
+    if (r < 0.9)  return 'flute';
+    return 'glass';
+  };
+  const inst1 = pickInst();
+  let inst2 = pickInst();
+  for (let k = 0; k < 4 && inst2 === inst1; k++) inst2 = pickInst();
   state.arps = [
     // Voice 0 — vocal grain arpeggio, center pan, held slightly longer.
     { pattern: pat1, subdiv: sub1, octave: 0,   gate: 0.55, vel: 0.48, sampleId: vocalSample ? vocalSample.id : null, idxOffset: 0 },

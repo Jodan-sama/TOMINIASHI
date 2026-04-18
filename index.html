@@ -34,7 +34,10 @@
     <div class="rrow"><span>STATE</span><span id="r-state">asleep</span></div>
     <div class="rrow"><span>SAMPLES</span><span id="r-samples">0</span></div>
     <div class="rrow"><span>OLDEST</span><span id="r-oldest">—</span></div>
-    <div class="rrow"><span>NEXT WAKE</span><span id="r-nextwake">—</span></div>
+    <div class="rrow"><span>TEMPO</span><span id="r-bpm">—</span></div>
+    <div class="rrow"><span>KEY</span><span id="r-key">—</span></div>
+    <div class="rrow"><span>BAR</span><span id="r-bar">0</span></div>
+    <div class="rrow"><span>INTENSITY</span><span id="r-nextwake">—</span></div>
     <div class="rrow"><span>WAKES</span><span id="r-wakes">0</span></div>
     <div class="rrow"><span>AGE</span><span id="r-age">0s</span></div>
   </aside>
@@ -52,16 +55,15 @@
   <footer class="bar bottom">
     <div class="controls">
       <button id="btn-record" class="mono">◉ record breath</button>
-      <button id="btn-wake" class="mono">▶ wake now</button>
-      <button id="btn-sleep" class="mono">■ sleep</button>
+      <button id="btn-wake" class="mono">✦ excite</button>
+      <button id="btn-sleep" class="mono">~ chill</button>
       <button id="btn-evolve" class="mono">↻ evolve tick</button>
-      <button id="btn-wipe" class="mono warn">⌫ wipe</button>
     </div>
     <div class="volume">
       <label class="mono" for="vol">vol</label>
       <input id="vol" type="range" min="0" max="1" step="0.01" value="0.7" />
     </div>
-    <div class="hint mono">always playing · move mouse to modulate (X=note/filter, Y=density/cutoff) · hold click for bursts</div>
+    <div class="hint mono">always playing · mouse X=note bias · mouse Y=filter · ✦ excite = faster & louder · ~ chill = slower & softer</div>
   </footer>
 
   <div class="status mono" id="status">tap anywhere to begin</div>

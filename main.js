@@ -7,17 +7,26 @@ const LS_GENOME = 'tn_genome_v1';
 
 const state = {
   ctx: null, master: null, revSend: null, delSend: null, analyser: null, analyserData: null,
-  perfFilter: null, perfGain: null, ambGain: null, eventGain: null,
+  perfFilter: null, perfGain: null, ambGain: null, eventGain: null, drumBus: null, padBus: null,
   filterLFO: null, filterLFOGain: null,
   genome: null, store: null, samples: [],
   prng: Math.random,
-  mood: 'chatter', intensity: 0.5, excitement: 0, lastEvolveAt: 0,
-  scaleIndex: 0, scaleRoot: 0, melodyStep: 0,
+  mood: 'chatter', intensity: 0.55, excitement: 0, lastEvolveAt: 0,
+  scaleIndex: 0, scaleRoot: 0, melodyStep: 0, pendingKeyChange: false,
   mouse: { x: 0.5, y: 0.5, down: false, lastMoveAt: 0 },
   started: false, recording: false,
   bufferCache: new Map(),
   lastGrainAt: 0,
+  transport: { bpm: 96, beatIndex: 0, startTime: 0, running: false, keyBar: 0 },
+  voices: { kick: true, click: true, shake: true, rain: true, arp: true },
 };
+const STEPS_PER_BAR = 16;
+const KEY_CHANGE_EVERY_BARS = 8;
+const ROOT_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function keyLabel() {
+  const root = ((state.scaleRoot % 12) + 12) % 12;
+  return ROOT_NAMES[root] + ' ' + scaleNow().name;
+}
 
 // ======== PRNG ========
 function mulberry32(seed) {
@@ -162,8 +171,19 @@ async function initAudio() {
   ambFilter.connect(master);
   // Event bus — peaks, arpeggios; slight bandpass sheen
   const eventGain = ctx.createGain();
-  eventGain.gain.value = 0.9;
+  eventGain.gain.value = 0.95;
   eventGain.connect(master);
+  // Drum bus — synthesized percussion
+  const drumBus = ctx.createGain();
+  drumBus.gain.value = 0.55;
+  drumBus.connect(master);
+  const drumVerb = ctx.createGain();
+  drumVerb.gain.value = 0.18;
+  drumBus.connect(drumVerb);
+  // Pad bus — continuous rain / noise bed
+  const padBus = ctx.createGain();
+  padBus.gain.value = 0.0; // fade in after boot
+  padBus.connect(master);
   // Filter LFO — modulates the perf filter cutoff so things breathe
   const lfo = ctx.createOscillator();
   const lfoGain = ctx.createGain();
@@ -193,10 +213,119 @@ async function initAudio() {
   state.perfGain = perfGain;
   state.ambGain = ambGain;
   state.eventGain = eventGain;
+  state.drumBus = drumBus;
+  state.padBus = padBus;
+  state.drumVerb = drumVerb;
   state.ambFilter = ambFilter;
   state.filterLFO = lfo;
   state.filterLFOGain = lfoGain;
   state.analyserData = new Uint8Array(analyser.frequencyBinCount);
+  // route drum reverb send
+  drumVerb.connect(convolver);
+}
+// ======== PERCUSSION (synthesized, organic) ========
+function scheduleKick(when, vel = 0.7) {
+  if (!state.voices.kick) return;
+  const ctx = state.ctx;
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(110, when);
+  osc.frequency.exponentialRampToValueAtTime(38, when + 0.12);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.001, when);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.01, vel), when + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.001, when + 0.32);
+  // a little noise thud for body
+  const nBuf = ctx.createBuffer(1, ctx.sampleRate * 0.04, ctx.sampleRate);
+  const nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nd.length, 2);
+  const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const nLp = ctx.createBiquadFilter(); nLp.type = 'lowpass'; nLp.frequency.value = 180;
+  const nG = ctx.createGain(); nG.gain.value = vel * 0.35;
+  nSrc.connect(nLp); nLp.connect(nG); nG.connect(state.drumBus);
+  osc.connect(g); g.connect(state.drumBus);
+  osc.start(when); osc.stop(when + 0.4);
+  nSrc.start(when); nSrc.stop(when + 0.04);
+}
+function scheduleClick(when, vel = 0.5, hz = 2400) {
+  if (!state.voices.click) return;
+  const ctx = state.ctx;
+  const len = Math.floor(ctx.sampleRate * 0.035);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.5);
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = hz;
+  bp.Q.value = 3 + Math.random() * 4;
+  const g = ctx.createGain();
+  g.gain.value = vel * 0.28;
+  const pan = ctx.createStereoPanner();
+  pan.pan.value = (Math.random() * 2 - 1) * 0.7;
+  src.connect(bp); bp.connect(g); g.connect(pan); pan.connect(state.drumBus);
+  src.start(when); src.stop(when + 0.06);
+}
+function scheduleShake(when, vel = 0.4) {
+  if (!state.voices.shake) return;
+  const ctx = state.ctx;
+  const len = Math.floor(ctx.sampleRate * 0.09);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.4);
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 3800;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.001, when);
+  g.gain.exponentialRampToValueAtTime(vel * 0.22, when + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.001, when + 0.11);
+  const pan = ctx.createStereoPanner();
+  pan.pan.value = (Math.random() * 2 - 1) * 0.9;
+  src.connect(hp); hp.connect(g); g.connect(pan); pan.connect(state.drumBus);
+  src.start(when); src.stop(when + 0.12);
+}
+function startRainPad() {
+  if (!state.voices.rain) return;
+  const ctx = state.ctx;
+  // long looping noise buffer
+  const len = Math.floor(ctx.sampleRate * 4);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c);
+    let last = 0;
+    // brownian noise
+    for (let i = 0; i < len; i++) {
+      last = (last + (Math.random() * 2 - 1) * 0.06) * 0.985;
+      d[i] = last;
+    }
+  }
+  const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1600; bp.Q.value = 0.6;
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4000;
+  const g = ctx.createGain(); g.gain.value = 0.9;
+  src.connect(bp); bp.connect(lp); lp.connect(g); g.connect(state.padBus);
+  // also send to reverb
+  const rg = ctx.createGain(); rg.gain.value = 0.35;
+  g.connect(rg); rg.connect(state.revSend);
+  src.start();
+  // slow LFO on filter so it feels organic
+  const lfo = ctx.createOscillator();
+  const lfoGain = ctx.createGain();
+  lfo.frequency.value = 0.08;
+  lfoGain.gain.value = 500;
+  lfo.connect(lfoGain); lfoGain.connect(bp.frequency);
+  lfo.start();
+  // occasional louder raindrops
+  function drop() {
+    if (!state.voices.rain) { setTimeout(drop, 800); return; }
+    scheduleClick(ctx.currentTime + 0.01, 0.45, 2400 + Math.random() * 2500);
+    setTimeout(drop, 350 + Math.random() * 2400 / (0.3 + state.intensity));
+  }
+  setTimeout(drop, 900);
+  // fade in pad
+  state.padBus.gain.cancelScheduledValues(ctx.currentTime);
+  state.padBus.gain.setValueAtTime(0, ctx.currentTime);
+  state.padBus.gain.linearRampToValueAtTime(0.18, ctx.currentTime + 4);
 }
 // ======== SCALES / NOTES ========
 const SCALES = [
@@ -282,6 +411,7 @@ function triggerGrain(rec, opts) {
     revSend: revAmount = null,
     delSend: delAmount = null,
     detuneCents = 0,
+    when = null,           // schedule ahead (ctx.currentTime units)
   } = opts;
   const buf = toAudioBuffer(rec);
   const src = ctx.createBufferSource();
@@ -289,7 +419,7 @@ function triggerGrain(rec, opts) {
   src.playbackRate.value = rate;
   if (detuneCents) { try { src.detune.value = detuneCents; } catch (e) {} }
   const env = ctx.createGain();
-  const t0 = ctx.currentTime;
+  const t0 = when != null ? Math.max(when, ctx.currentTime + 0.001) : ctx.currentTime;
   const dur = Math.max(0.02, durationMs / 1000);
   const atk = Math.min(0.04, dur * (layer === 'ambient' ? 0.5 : 0.3));
   const rel = Math.min(0.15, dur * (layer === 'ambient' ? 0.5 : 0.4));
@@ -423,29 +553,10 @@ async function evolveTick() {
   state.lastEvolveAt = Date.now();
   saveGenome();
 }
-// ======== SCHEDULER (always-on, three layers) ========
-// Ambient layer: slow, droning, heavily reverbed, long grains, always plays.
-// Performance layer: melodic grains quantized to a scale; density follows mouse/mood.
-// Event layer: occasional excited bursts — arpeggios, rapid ascents, rare silences.
-function pickMoodEvery(ms = 18000) {
-  const now = Date.now();
-  if (!state._lastMoodPick || now - state._lastMoodPick > ms) {
-    state._lastMoodPick = now;
-    const moods = ['hush', 'chatter', 'memory', 'new'];
-    const r = state.prng();
-    state.mood = r < 0.3 ? 'hush' : r < 0.65 ? 'chatter' : r < 0.85 ? 'memory' : 'new';
-    document.body.className = 'awake mood-' + state.mood;
-    // pick a new scale occasionally
-    if (state.prng() < 0.35) state.scaleIndex = Math.floor(state.prng() * SCALES.length);
-    // pick a new root occasionally
-    if (state.prng() < 0.35) state.scaleRoot = Math.floor(state.prng() * 12) - 5;
-    // intensity baseline per mood
-    state.intensity = state.mood === 'hush' ? 0.25
-                    : state.mood === 'chatter' ? 0.65
-                    : state.mood === 'memory' ? 0.4
-                    : 0.75;
-  }
-}
+// ======== SCHEDULER (grid transport) ========
+// A musical clock. Every 16 steps per bar. Key changes every N bars.
+// Excite/chill modify tempo + drum density + arpeggio rate persistently.
+function pickSamplesForMoodInline(mood) { return pickSamplesForMood(mood); }
 function pickSamplesForMood(mood) {
   const now = Date.now();
   const out = state.samples.filter((s) => {
@@ -461,205 +572,248 @@ function pickSample(pool) {
   if (!pool || !pool.length) return null;
   return pool[Math.floor(state.prng() * pool.length)];
 }
-
-// --- Ambient: long, low, reverbed drone-grains ---
-async function ambientTick() {
-  if (!state.started || !state.samples.length) { setTimeout(ambientTick, 1500); return; }
-  const pool = pickSamplesForMood(state.mood === 'hush' ? 'memory' : state.mood);
-  const meta = pickSample(pool);
-  if (meta) {
-    const full = await state.store.get(meta.id).catch(() => null);
-    if (full) {
-      const dur = 800 + state.prng() * 2400;
-      const maxOff = Math.max(0, meta.durationMs - dur);
-      const offsetMs = state.prng() * maxOff;
-      // ambient uses octave-down or fifth for drone feel
-      const choices = [-12, -7, -5, 0, 7];
-      const st = choices[Math.floor(state.prng() * choices.length)];
-      const rate = rateForSemitones(st + (state.prng() * 2 - 1) * 2);
-      const pan = (state.prng() * 2 - 1) * 0.85;
-      const gain = 0.18 + state.prng() * 0.14;
-      const filterHz = 500 + state.prng() * 900 + (1 - state.mouse.y) * 600;
-      triggerGrain(full, {
-        offsetMs, durationMs: dur, rate: Math.max(0.15, Math.min(2, rate)),
-        pan, gain, mutation: Math.max(meta.mutationLevel, 0.3),
-        layer: 'ambient', filterType: 'lowpass', filterHz, filterQ: 0.5,
-        revSend: 0.9, delSend: 0.2,
-      });
-    }
-  }
-  const next = 600 + state.prng() * 1200 * (1.6 - state.intensity);
-  setTimeout(ambientTick, next);
-}
-
-// --- Performance/melody: pitched grains walking a scale ---
 function stepMelody() {
   const bias = state.genome.params.melodicBias;
-  // high bias → smoother stepwise walk; low bias → leaps
   let jump;
   if (state.prng() < bias) jump = (state.prng() < 0.5 ? -1 : 1);
   else jump = Math.floor((state.prng() * 2 - 1) * 4);
   state.melodyStep += jump;
-  // wrap
   if (state.melodyStep > 14) state.melodyStep = 8 + Math.floor(state.prng() * 4);
   if (state.melodyStep < -10) state.melodyStep = -4 - Math.floor(state.prng() * 4);
   return state.melodyStep;
 }
-async function performanceTick() {
-  if (!state.started || !state.samples.length) { setTimeout(performanceTick, 800); return; }
-  pickMoodEvery();
-  const pool = pickSamplesForMood(state.mood);
-  const meta = pickSample(pool);
-  if (meta) {
-    const full = await state.store.get(meta.id).catch(() => null);
-    if (full) {
-      const p = state.genome.params;
-      const grainMs = p.grainMinMs + state.prng() * Math.max(20, p.grainMaxMs - p.grainMinMs);
-      const durMs = Math.min(grainMs, Math.max(30, meta.durationMs - 20));
-      const maxOffset = Math.max(0, meta.durationMs - durMs);
-      const offsetMs = state.prng() * maxOffset;
-      const degree = stepMelody();
-      // mouse X transposes degree ±5
-      const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 10);
-      const rate = rateForDegree(transposedDegree) * (1 + (state.prng() * 2 - 1) * p.pitchDrift * 0.1);
-      const pan = Math.sin(state.melodyStep * 0.8) * 0.6 + (state.prng() * 2 - 1) * 0.25;
-      const yGain = 0.28 + (1 - state.mouse.y) * 0.45;
-      const gain = (0.5 + state.prng() * 0.25) * yGain;
-      // filter cutoff tied to mouse Y (1 = low, 0 = open)
-      const cutoff = 400 + (1 - state.mouse.y) * 9000 + state.prng() * 1200;
-      triggerGrain(full, {
-        offsetMs, durationMs: durMs,
-        rate: Math.max(0.2, Math.min(4, rate)),
-        pan, gain, mutation: meta.mutationLevel,
-        layer: 'perf', filterHz: cutoff,
-        detuneCents: (state.prng() * 2 - 1) * 12,
-      });
-      meta.lastPlayedAt = Date.now();
-    }
-  }
-  // tempo: mood + mouse Y + intensity; low Y = busier
-  const base = state.mood === 'hush' ? 520
-            : state.mood === 'chatter' ? 140
-            : state.mood === 'memory' ? 320
-            : 180;
-  const mouseSpeed = 1.5 - state.mouse.y; // Y 0 (top) = faster
-  const next = Math.max(45, base / mouseSpeed * (0.7 + state.prng() * 0.6));
-  setTimeout(performanceTick, next);
+
+// Mood picker: runs every 4 bars, picks a musical "section"
+function pickSection() {
+  const r = state.prng();
+  state.mood = r < 0.3 ? 'chatter' : r < 0.55 ? 'new' : r < 0.8 ? 'memory' : 'hush';
+  document.body.className = 'awake mood-' + state.mood;
+  // Section intensity sets baseline
+  const base = state.mood === 'hush' ? 0.35
+             : state.mood === 'chatter' ? 0.8
+             : state.mood === 'memory' ? 0.55
+             : 0.9;
+  state.intensity = base;
+}
+function pickNewKey() {
+  state.scaleIndex = Math.floor(state.prng() * SCALES.length);
+  state.scaleRoot = Math.floor(state.prng() * 12) - 6;
 }
 
-// --- Events: arpeggios, bursts, silences ---
-function scheduleNextEvent() {
-  const base = 8000 + state.prng() * 20000;
-  const scaled = base / (0.4 + state.intensity);
-  setTimeout(runEvent, scaled);
-}
-async function runEvent() {
-  if (!state.started || !state.samples.length) { scheduleNextEvent(); return; }
-  const kind = (() => {
-    const r = state.prng();
-    if (r < 0.35) return 'arpeggio';
-    if (r < 0.55) return 'burst';
-    if (r < 0.7)  return 'ascent';
-    if (r < 0.82) return 'drop';
-    if (r < 0.92) return 'silence';
-    return 'echo';
-  })();
-  state.excitement = 1;
-  const pool = pickSamplesForMood(state.mood);
-  const meta = pickSample(pool);
-  if (!meta) { scheduleNextEvent(); return; }
-  const full = await state.store.get(meta.id).catch(() => null);
-  if (!full) { scheduleNextEvent(); return; }
+// --- Note trigger aligned to grid ---
+function playNote(full, meta, when, opts = {}) {
   const p = state.genome.params;
+  const {
+    degree = stepMelody(),
+    vel = 0.55,
+    durationMs = null,
+    layer = 'perf',
+    filterHz = null,
+    extraDetune = 0,
+    panOverride = null,
+  } = opts;
+  const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 12);
+  // Grain duration: shorter + choppier when energetic, longer when chill
+  const gMin = p.grainMinMs + 30;
+  const gMax = Math.max(gMin + 40, p.grainMaxMs * (0.5 + state.intensity));
+  const dur = durationMs != null ? durationMs : gMin + state.prng() * (gMax - gMin);
+  const clampedDur = Math.min(dur, Math.max(40, meta.durationMs - 20));
+  const maxOffset = Math.max(0, meta.durationMs - clampedDur);
+  const offsetMs = state.prng() * maxOffset;
+  const rate = rateForDegree(transposedDegree);
+  const pan = panOverride != null ? panOverride : (Math.sin(state.melodyStep * 0.6) * 0.5 + (state.prng() * 2 - 1) * 0.35);
+  const cutoff = filterHz != null ? filterHz : 600 + (1 - state.mouse.y) * 9000 + state.prng() * 1200;
+  triggerGrain(full, {
+    offsetMs, durationMs: clampedDur,
+    rate: Math.max(0.15, Math.min(5, rate)),
+    pan, gain: vel,
+    mutation: meta.mutationLevel,
+    layer, filterHz: cutoff,
+    detuneCents: (state.prng() * 2 - 1) * 10 + extraDetune,
+    when,
+  });
+  meta.lastPlayedAt = Date.now();
+}
 
-  if (kind === 'arpeggio') {
-    const root = Math.floor(state.prng() * 5);
-    const pattern = [0, 2, 4, 7, 4, 2];
-    const stepMs = 90 + state.prng() * 140;
-    for (let i = 0; i < pattern.length * 2; i++) {
-      const d = root + pattern[i % pattern.length] + (i >= pattern.length ? 7 : 0);
-      setTimeout(() => {
-        triggerGrain(full, {
-          offsetMs: state.prng() * Math.max(0, meta.durationMs - 200),
-          durationMs: 100 + state.prng() * 120,
-          rate: rateForDegree(d),
-          pan: (state.prng() * 2 - 1) * 0.7,
-          gain: 0.55,
-          mutation: meta.mutationLevel * 0.5,
-          layer: 'event', filterType: 'bandpass', filterHz: 1200 + d * 120, filterQ: 3,
-          revSend: 0.4, delSend: 0.4,
-        });
-      }, i * stepMs);
+// Arpeggio patterns (scale degrees) — one of these runs when requested
+const ARP_PATTERNS = [
+  [0, 2, 4, 7],           // upward
+  [7, 4, 2, 0],           // downward
+  [0, 4, 2, 7, 4, 9],     // zig-zag
+  [0, 7, 2, 9, 4, 11],    // wide leaps
+  [0, 2, 4, 5, 7, 9, 11], // scale run
+  [0, 3, 5, 7, 10, 7, 5, 3], // pentatonic
+];
+
+function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 1) {
+  const pool = pickSamplesForMood(state.mood);
+  const meta = pickSample(pool);
+  if (!meta) return;
+  state.store.get(meta.id).then(full => {
+    if (!full) return;
+    const pattern = ARP_PATTERNS[Math.floor(state.prng() * ARP_PATTERNS.length)];
+    const sixteenth = beatDuration() / 4;
+    const steps = stepsBeats * 4;
+    for (let i = 0; i < steps; i++) {
+      const deg = baseDegree + pattern[i % pattern.length] + (i >= pattern.length ? 7 : 0);
+      const t = startWhen + i * sixteenth;
+      playNote(full, meta, t, {
+        degree: deg,
+        vel: (0.45 + (i % 4 === 0 ? 0.18 : 0)) * velScale,
+        durationMs: 90 + state.prng() * 100,
+        layer: 'event',
+        filterHz: 1200 + (i * 160) + state.prng() * 800,
+        extraDetune: (state.prng() * 2 - 1) * 6,
+        panOverride: (i / steps) * 1.4 - 0.7,
+      });
     }
-  } else if (kind === 'burst') {
-    for (let i = 0; i < 8 + Math.floor(state.prng() * 10); i++) {
-      setTimeout(() => {
-        triggerGrain(full, {
-          offsetMs: state.prng() * Math.max(0, meta.durationMs - 80),
-          durationMs: 40 + state.prng() * 100,
-          rate: rateForDegree(Math.floor(state.prng() * 14) - 3),
-          pan: (state.prng() * 2 - 1) * 0.95,
-          gain: 0.35 + state.prng() * 0.25,
-          mutation: meta.mutationLevel,
-          layer: 'event', filterHz: 1500 + state.prng() * 6000,
-          revSend: 0.6, delSend: 0.5,
-        });
-      }, i * (25 + state.prng() * 50));
-    }
-  } else if (kind === 'ascent') {
-    for (let i = 0; i < 10; i++) {
-      setTimeout(() => {
-        triggerGrain(full, {
-          offsetMs: state.prng() * Math.max(0, meta.durationMs - 120),
-          durationMs: 140,
-          rate: rateForDegree(i - 3),
-          pan: (i / 10) * 1.6 - 0.8,
-          gain: 0.45,
-          mutation: meta.mutationLevel * 0.4,
-          layer: 'event', filterType: 'bandpass', filterHz: 500 + i * 700, filterQ: 4,
-          revSend: 0.5, delSend: 0.3,
-        });
-      }, i * (80 + state.prng() * 60));
-    }
-  } else if (kind === 'drop') {
-    for (let i = 0; i < 8; i++) {
-      setTimeout(() => {
-        triggerGrain(full, {
-          offsetMs: state.prng() * Math.max(0, meta.durationMs - 200),
-          durationMs: 220 + i * 30,
-          rate: rateForDegree(6 - i),
-          pan: (state.prng() * 2 - 1) * 0.5,
-          gain: 0.55 - i * 0.03,
-          mutation: Math.min(1, meta.mutationLevel + i * 0.05),
-          layer: 'event', filterType: 'lowpass', filterHz: 4000 - i * 380, filterQ: 2,
-          revSend: 0.7, delSend: 0.5,
-        });
-      }, i * 130);
-    }
-  } else if (kind === 'echo') {
-    // play one loud grain with heavy delay send repeatedly
-    for (let i = 0; i < 4; i++) {
-      setTimeout(() => {
-        triggerGrain(full, {
-          offsetMs: state.prng() * Math.max(0, meta.durationMs - 180),
-          durationMs: 200 + state.prng() * 200,
-          rate: rateForDegree(stepMelody()),
-          pan: (state.prng() * 2 - 1) * 0.6,
-          gain: 0.55 - i * 0.1,
-          mutation: meta.mutationLevel,
-          layer: 'event', filterHz: 1800 + state.prng() * 2000,
-          revSend: 0.3, delSend: 0.95,
-        });
-      }, i * 260);
-    }
-  } // silence kind: just don't trigger, intensity briefly dips
-  else if (kind === 'silence') {
-    const prev = state.intensity;
-    state.intensity = 0.05;
-    setTimeout(() => { state.intensity = prev; }, 2500 + state.prng() * 3500);
+  });
+}
+
+// --- Transport ---
+function beatDuration() { return 60 / state.transport.bpm; }
+
+function startTransport() {
+  if (state.transport.running) return;
+  state.transport.running = true;
+  state.transport.startTime = state.ctx.currentTime + 0.15;
+  state.transport.beatIndex = 0;
+  pickSection();
+  pickNewKey();
+  schedulerLoop();
+}
+
+function timeForStep(i) {
+  return state.transport.startTime + (i / 4) * beatDuration(); // i in 16ths
+}
+
+function schedulerLoop() {
+  if (!state.transport.running) return;
+  const lookahead = 0.18; // seconds
+  const now = state.ctx.currentTime;
+  while (timeForStep(state.transport.beatIndex) < now + lookahead) {
+    scheduleStep(state.transport.beatIndex, timeForStep(state.transport.beatIndex));
+    state.transport.beatIndex++;
   }
-  setTimeout(() => { state.excitement = Math.max(0, state.excitement - 0.15); }, 2000);
-  scheduleNextEvent();
+  setTimeout(schedulerLoop, 25);
+}
+
+function scheduleStep(i, when) {
+  const step = i % STEPS_PER_BAR;
+  const bar = Math.floor(i / STEPS_PER_BAR);
+  const beat = step / 4;
+  const onBeat = step % 4 === 0;
+  const offbeat = step % 4 === 2;
+  const sixteenth = beatDuration() / 4;
+
+  // --- Structure / section changes ---
+  if (step === 0 && bar > 0 && bar % 4 === 0) {
+    pickSection();
+  }
+  if (step === 0 && bar > 0 && bar % KEY_CHANGE_EVERY_BARS === 0) {
+    pickNewKey();
+    state.transport.keyBar = bar;
+  }
+
+  // --- DRUMS ---
+  // Kick pattern varies with intensity
+  if (state.voices.kick) {
+    // Always downbeat 1, sometimes 3
+    if (step === 0) scheduleKick(when, 0.75);
+    if (step === 8 && state.intensity > 0.3) scheduleKick(when, 0.6);
+    if (state.intensity > 0.7) {
+      if (step === 4 && state.prng() < 0.5) scheduleKick(when, 0.45);
+      if (step === 12 && state.prng() < 0.6) scheduleKick(when, 0.55);
+    }
+    if (state.excitement > 0.5 && state.prng() < 0.25) scheduleKick(when + sixteenth * 0.5, 0.35);
+  }
+  // Soft clicks on every 16th-ish — density from intensity
+  if (state.voices.click) {
+    const clickProb = 0.15 + state.intensity * 0.5 + state.excitement * 0.3;
+    if (state.prng() < clickProb) {
+      scheduleClick(when, 0.25 + state.prng() * 0.3, 1800 + state.prng() * 2600);
+    }
+    // emphasis on off-beats
+    if (offbeat) scheduleClick(when, 0.35, 3200 + state.prng() * 1800);
+  }
+  // Shaker on 16th subdivisions when busy
+  if (state.voices.shake && state.intensity > 0.4) {
+    if (step % 2 === 1 && state.prng() < 0.5 + state.excitement * 0.3) {
+      scheduleShake(when, 0.28);
+    }
+  }
+
+  // --- MELODY ---
+  if (state.samples.length) {
+    const pool = pickSamplesForMood(state.mood);
+    const meta = pickSample(pool);
+    if (meta) {
+      // Note density: strong on downbeats, probabilistic on offbeats
+      let prob = 0;
+      if (onBeat) prob = 0.85;
+      else if (step % 2 === 0) prob = 0.55 + state.intensity * 0.3;
+      else prob = 0.25 + state.intensity * 0.4 + state.excitement * 0.3;
+      if (state.prng() < prob) {
+        state.store.get(meta.id).then(full => {
+          if (!full) return;
+          const vel = (onBeat ? 0.58 : offbeat ? 0.48 : 0.38)
+                    + state.prng() * 0.12
+                    + state.excitement * 0.1;
+          playNote(full, meta, when, {
+            vel: vel * (0.5 + (1 - state.mouse.y) * 0.7),
+          });
+        });
+      }
+      // Overlapping counter-melody: on busier sections, play a harmonic 3rd/5th in parallel
+      if (state.intensity > 0.6 && onBeat && state.prng() < 0.4) {
+        const meta2 = pickSample(pool);
+        if (meta2 && meta2.id !== meta.id) {
+          state.store.get(meta2.id).then(full2 => {
+            if (!full2) return;
+            playNote(full2, meta2, when + sixteenth * 0.1, {
+              degree: stepMelody() + (state.prng() < 0.5 ? 2 : 4),
+              vel: 0.38, layer: 'perf',
+              panOverride: (state.prng() < 0.5 ? -0.6 : 0.6),
+            });
+          });
+        }
+      }
+    }
+  }
+
+  // --- ARPEGGIOS (more frequent when excited) ---
+  if (step === 0 && state.samples.length) {
+    const arpProb = 0.1 + state.intensity * 0.3 + state.excitement * 0.5;
+    if (bar % 2 === 0 && state.prng() < arpProb) {
+      const stepsBeats = state.excitement > 0.5 ? 8 : 4;
+      scheduleArpeggio(when + beatDuration() * 0.5, stepsBeats, Math.floor(state.prng() * 5), 0.9);
+    }
+  }
+
+  // --- AMBIENT drone: slow, every 4 beats pick a sustained grain ---
+  if (step === 0 && bar % 2 === 0 && state.samples.length) {
+    const pool = pickSamplesForMood(state.mood === 'chatter' ? 'memory' : state.mood);
+    const m = pickSample(pool);
+    if (m) {
+      state.store.get(m.id).then(full => {
+        if (!full) return;
+        const st = [-12, -7, 0, 7][Math.floor(state.prng() * 4)];
+        triggerGrain(full, {
+          offsetMs: state.prng() * Math.max(0, m.durationMs - 1600),
+          durationMs: 1400 + state.prng() * 1800,
+          rate: rateForSemitones(st),
+          pan: (state.prng() * 2 - 1) * 0.85,
+          gain: 0.16 + state.prng() * 0.1,
+          mutation: Math.max(m.mutationLevel, 0.3),
+          layer: 'ambient', filterType: 'lowpass',
+          filterHz: 500 + state.prng() * 800 + (1 - state.mouse.y) * 800,
+          filterQ: 0.6,
+          revSend: 0.9, delSend: 0.2,
+          when,
+        });
+      });
+    }
+  }
 }
 
 async function autoRecord() {
@@ -669,12 +823,22 @@ async function autoRecord() {
   await recordBreath(2000 + state.prng() * 2000);
 }
 
-// triggered by the "excite" button: force a big event right now
+// Excite: persistently speed up + louden + make busier
 function excite() {
-  state.excitement = 1;
-  runEvent();
+  state.transport.bpm = Math.min(160, state.transport.bpm + 6);
+  state.intensity = Math.min(1, state.intensity + 0.18);
+  state.excitement = Math.min(1, state.excitement + 0.55);
+  // trigger an immediate arpeggio at next beat
+  const nextBeatWhen = state.ctx ? state.ctx.currentTime + 0.05 : 0;
+  if (state.samples.length && state.ctx) scheduleArpeggio(nextBeatWhen, 8, 0, 1);
 }
-// ======== INPUT (mouse) ========
+// Chill: slow down + soften
+function chill() {
+  state.transport.bpm = Math.max(62, state.transport.bpm - 6);
+  state.intensity = Math.max(0.15, state.intensity - 0.2);
+  state.excitement = Math.max(0, state.excitement - 0.4);
+}
+// ======== INPUT (mouse modulates ongoing parameters) ========
 function initInput() {
   const cv = document.getElementById('viz');
   const onMove = (cx, cy) => {
@@ -683,69 +847,41 @@ function initInput() {
     state.mouse.lastMoveAt = Date.now();
   };
   cv.addEventListener('mousemove', (e) => onMove(e.clientX, e.clientY));
-  cv.addEventListener('mousedown', () => {
-    state.mouse.down = true;
-    if (!state.started) return;
-    playerBurst();
-  });
-  cv.addEventListener('mouseup', () => { state.mouse.down = false; });
-  cv.addEventListener('mouseleave', () => { state.mouse.down = false; });
-  cv.addEventListener('touchstart', (e) => {
-    if (e.touches.length) {
-      onMove(e.touches[0].clientX, e.touches[0].clientY);
-      state.mouse.down = true;
-      playerBurst();
-    }
-  }, { passive: true });
   cv.addEventListener('touchmove', (e) => {
     if (e.touches.length) onMove(e.touches[0].clientX, e.touches[0].clientY);
   }, { passive: true });
-  cv.addEventListener('touchend', () => { state.mouse.down = false; });
-  // hold-to-play burst loop (small, since performanceTick already runs)
-  setInterval(() => {
-    if (state.mouse.down && state.started && state.samples.length) playerBurst();
-  }, 120);
-  // continuously drive the perf filter cutoff from mouse Y + LFO
+  cv.addEventListener('touchstart', (e) => {
+    if (e.touches.length) onMove(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  // continuously drive the perf / ambient filter cutoffs + drum bus from mouse Y + excitement
   const driveFilter = () => {
-    if (state.perfFilter && state.ctx) {
-      const base = 320 + (1 - state.mouse.y) * 6800;
-      const target = base * (0.8 + state.excitement * 0.6);
-      try {
-        state.perfFilter.frequency.setTargetAtTime(target, state.ctx.currentTime, 0.08);
-        state.perfFilter.Q.setTargetAtTime(1 + state.mouse.y * 4, state.ctx.currentTime, 0.1);
-      } catch (e) {}
-    }
-    if (state.ambFilter && state.ctx) {
-      const amb = 400 + (1 - state.mouse.y) * 1400;
-      try { state.ambFilter.frequency.setTargetAtTime(amb, state.ctx.currentTime, 0.2); } catch (e) {}
+    if (state.ctx) {
+      const t = state.ctx.currentTime;
+      if (state.perfFilter) {
+        const base = 400 + (1 - state.mouse.y) * 8400;
+        const target = base * (0.85 + state.excitement * 0.4);
+        try {
+          state.perfFilter.frequency.setTargetAtTime(target, t, 0.08);
+          state.perfFilter.Q.setTargetAtTime(0.8 + state.mouse.y * 4 + state.excitement * 2, t, 0.12);
+        } catch (e) {}
+      }
+      if (state.ambFilter) {
+        const amb = 300 + (1 - state.mouse.y) * 1800;
+        try { state.ambFilter.frequency.setTargetAtTime(amb, t, 0.2); } catch (e) {}
+      }
+      if (state.drumBus) {
+        // drums softer when chill, louder when excited
+        const drumTarget = 0.4 + state.intensity * 0.4 + state.excitement * 0.25;
+        try { state.drumBus.gain.setTargetAtTime(drumTarget, t, 0.3); } catch (e) {}
+      }
+      if (state.padBus) {
+        const padTarget = 0.1 + (1 - state.intensity) * 0.2;
+        try { state.padBus.gain.setTargetAtTime(padTarget, t, 0.8); } catch (e) {}
+      }
     }
     requestAnimationFrame(driveFilter);
   };
   requestAnimationFrame(driveFilter);
-}
-async function playerBurst() {
-  if (!state.samples.length) return;
-  const pool = state.samples;
-  const meta = pool[Math.floor(state.prng() * pool.length)];
-  const full = await state.store.get(meta.id).catch(() => null);
-  if (!full) return;
-  const count = 1 + Math.floor((1 - state.mouse.y) * 5);
-  for (let i = 0; i < count; i++) {
-    setTimeout(() => {
-      const degree = stepMelody() + Math.round((state.mouse.x - 0.5) * 10);
-      const durMs = 80 + state.prng() * 160;
-      const offsetMs = state.prng() * Math.max(0, meta.durationMs - durMs);
-      triggerGrain(full, {
-        offsetMs, durationMs: durMs,
-        rate: rateForDegree(degree),
-        pan: (state.prng() * 2 - 1) * 0.8,
-        gain: 0.6 + state.prng() * 0.2,
-        mutation: meta.mutationLevel * 0.5,
-        layer: 'perf', filterHz: 600 + (1 - state.mouse.y) * 8000, filterQ: 2,
-        revSend: 0.4, delSend: 0.3,
-      });
-    }, i * (20 + state.prng() * 50));
-  }
 }
 // ======== VISUALIZER ========
 const viz = { cv: null, ctx: null, w: 0, h: 0, dpr: 1, phase: 0, ring: new Array(96).fill(0) };
@@ -879,7 +1015,7 @@ function updateReadouts() {
   el('r-genome').textContent = g.id.slice(0, 8);
   el('r-gen').textContent = g.generation;
   el('r-mood').textContent = state.mood;
-  el('r-state').textContent = 'playing · ' + (scaleNow().name);
+  el('r-state').textContent = state.started ? 'playing' : 'paused';
   el('r-samples').textContent = state.samples.length;
   el('r-wakes').textContent = g.activationCount;
   el('r-age').textContent = fmtTime(Date.now() - g.birthday);
@@ -887,7 +1023,14 @@ function updateReadouts() {
   let oldest = 0;
   for (const s of state.samples) { const a = now - s.recordedAt; if (a > oldest) oldest = a; }
   el('r-oldest').textContent = state.samples.length ? fmtTime(oldest) : '—';
-  el('r-nextwake').textContent = 'intensity ' + state.intensity.toFixed(2);
+  el('r-nextwake').textContent = state.intensity.toFixed(2) + (state.excitement > 0.05 ? ' ✦' : '');
+  const bpmEl = el('r-bpm'); if (bpmEl) bpmEl.textContent = Math.round(state.transport.bpm) + ' bpm';
+  const keyEl = el('r-key'); if (keyEl) keyEl.textContent = keyLabel();
+  const barEl = el('r-bar'); if (barEl) {
+    const bar = Math.floor(state.transport.beatIndex / STEPS_PER_BAR);
+    const step = state.transport.beatIndex % STEPS_PER_BAR;
+    barEl.textContent = bar + ':' + String(step).padStart(2, '0');
+  }
   const p = g.params;
   el('p-grain').textContent = p.grainMinMs.toFixed(0) + '–' + p.grainMaxMs.toFixed(0);
   el('p-pitch').textContent = p.pitchDrift.toFixed(3);
@@ -906,22 +1049,9 @@ function wireControls() {
     btn.classList.remove('recording');
     btn.textContent = '◉ record breath';
   });
-  // repurposed: excite = force an event; chill = drop intensity
-  const wakeBtn = el('btn-wake'); if (wakeBtn) { wakeBtn.textContent = '✦ excite'; wakeBtn.addEventListener('click', () => excite()); }
-  const sleepBtn = el('btn-sleep'); if (sleepBtn) {
-    sleepBtn.textContent = '~ chill';
-    sleepBtn.addEventListener('click', () => {
-      state.mood = 'hush'; state.intensity = 0.15; state.excitement = 0;
-      document.body.className = 'awake mood-hush';
-    });
-  }
+  const wakeBtn = el('btn-wake'); if (wakeBtn) wakeBtn.addEventListener('click', () => excite());
+  const sleepBtn = el('btn-sleep'); if (sleepBtn) sleepBtn.addEventListener('click', () => chill());
   el('btn-evolve').addEventListener('click', () => evolveTick());
-  el('btn-wipe').addEventListener('click', async () => {
-    if (!confirm('Wipe this instrument? Genome + all samples erased.')) return;
-    try { await state.store.clear(); } catch (e) {}
-    localStorage.removeItem(LS_GENOME);
-    location.reload();
-  });
   el('vol').addEventListener('input', (e) => {
     if (state.master) state.master.gain.value = parseFloat(e.target.value);
   });
@@ -969,14 +1099,13 @@ async function boot() {
     try {
       await initAudio();
       await ensureMic();
-      // start always-on playback loops
-      setTimeout(ambientTick, 400);
-      setTimeout(performanceTick, 600);
-      scheduleNextEvent();
+      // start always-on transport + organic pad
+      startTransport();
+      startRainPad();
       status.textContent = state.samples.length
-        ? 'playing — move mouse · hold click · record more breaths'
-        : 'ready — record your first breath (◉) to give it material';
-      setTimeout(() => status.classList.add('hidden'), 2400);
+        ? 'playing — move mouse to modulate · ✦ excite · ~ chill'
+        : 'record a breath (◉) to give it material — melody awaits samples';
+      setTimeout(() => status.classList.add('hidden'), 2600);
     } catch (e) {
       console.error(e);
       status.textContent = 'mic permission denied — click to retry';

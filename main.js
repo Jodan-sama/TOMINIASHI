@@ -1218,9 +1218,14 @@ function pickNewKey() {
   for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
   state.scaleIndex = i;
   state.scaleRoot = NICE_ROOTS[Math.floor(state.prng() * NICE_ROOTS.length)];
-  // 50% of keys stick around for 16 bars (double length) so the ear can
-  // really settle into them.  The other 50% use the usual 8-bar cadence.
-  state.currentKeyLength = state.prng() < 0.5 ? 16 : KEY_CHANGE_EVERY_BARS;
+  // Key length distribution: 40% 8 bars, 30% 16 bars, 20% 32 bars, 10% 64.
+  // Extended keys freeze the mood so the ear can really settle into one
+  // harmony for a while; arps still refresh every 8 bars inside.
+  const lenRoll = state.prng();
+  state.currentKeyLength = lenRoll < 0.4 ? 8
+                         : lenRoll < 0.7 ? 16
+                         : lenRoll < 0.9 ? 32
+                         : 64;
 }
 
 // --- Note trigger aligned to grid ---
@@ -1399,20 +1404,27 @@ function scheduleStep(i, when) {
   const sixteenth = beatDuration() / 4;
 
   // --- Structure / section changes ---
-  if (step === 0 && bar > 0 && bar % 4 === 0) pickSection();
-  // Key change when `currentKeyLength` bars have elapsed since the last
-  // key pick.  Length is 8 or 16 (chosen by pickNewKey).
   const barsSinceKey = bar - state.transport.keyBar;
+  // Key change: when we've elapsed the current key's lifespan.  Runs a
+  // FULL pickSection (new mood, voices, instrument, melody, arps) so the
+  // transition is clean.
   if (step === 0 && bar > 0 && barsSinceKey >= state.currentKeyLength) {
     pickNewKey();
     state.transport.keyBar = bar;
+    pickSection();
   }
-  // Mid-key arp refresh: if we're halfway through a double-length (16-bar)
-  // key, reshuffle the three arp voices so the second half gets a new
-  // arpeggio line without changing the key.  Creates a B-section feel
-  // inside the same harmony.
-  if (step === 0 && state.currentKeyLength === 16 && barsSinceKey === 8) {
+  // Short-key mood changes: only inside 8-bar keys does pickSection run
+  // mid-key on a 4-bar rhythm.  Extended keys freeze the mood.
+  else if (step === 0 && bar > 0 && bar % 4 === 0 && state.currentKeyLength <= 8) {
+    pickSection();
+  }
+  // Mid-key B/C/D sections: inside an extended key (16/32/64 bars),
+  // every 8 bars reshuffle the arp voices — and half the time the
+  // melody line too — without touching mood or the key.  Gives the
+  // long keys a sense of progression without shifting harmony.
+  else if (step === 0 && bar > 0 && barsSinceKey > 0 && barsSinceKey % 8 === 0 && state.currentKeyLength > 8) {
     pickArps();
+    if (state.prng() < 0.5) pickMelodyLine();
   }
 
   // --- DRUMS ---

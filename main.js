@@ -22,6 +22,10 @@ const state = {
   genome: null, store: null, samples: [],
   prng: Math.random,
   mood: 'chatter', intensity: 0.55, excitement: 0, lastEvolveAt: 0,
+  // chill/excite move intensity persistently. pickSection re-reads the
+  // mood's baseline but then adds this bias so the user's last choice
+  // sticks across section changes.
+  intensityBias: 0,
   scaleIndex: 0, scaleRoot: 0, melodyStep: 0, pendingKeyChange: false,
   mouse: { x: 0.5, y: 0.5, down: false, lastMoveAt: 0 },
   started: false, recording: false,
@@ -39,6 +43,9 @@ const state = {
   // Patterns are expressed as 7-scale-step degrees (0 = root, 2 = 3rd,
   // 4 = 5th, 7 = octave, etc.).
   melodyLine: null,
+  // Second melody line. Populated ~50% of the time by pickMelodyLine
+  // so two variations overlap in the same key/tempo.
+  melodyLine2: null,
   // Persistence sharing preferences (stored in localStorage)
   shareMyBreaths: localStorage.getItem(LS_SHARE_BREATHS) === '1',
   includeSharedPool: localStorage.getItem(LS_INCLUDE_SHARED) === '1',
@@ -651,10 +658,12 @@ function triggerGrain(rec, opts) {
     env.connect(bq);
     tail = bq;
   }
-  // Bitcrush / waveshaper for heavy mutation
-  if (mutation > 0.55 && Math.random() < 0.7) {
+  // Bitcrush / waveshaper for heavy mutation — softer than before: only
+  // kicks in on truly old samples (>0.7) and at about half the previous
+  // rate, and never crushes below 4 bits so the grit stays tasteful.
+  if (mutation > 0.7 && Math.random() < 0.35) {
     const ws = ctx.createWaveShaper();
-    const bits = Math.max(2, Math.floor(8 - mutation * 6));
+    const bits = Math.max(4, Math.floor(9 - mutation * 5));
     const steps = Math.pow(2, bits);
     const curve = new Float32Array(1024);
     for (let i = 0; i < 1024; i++) {
@@ -852,19 +861,50 @@ function pickMelodyLine() {
     pattern: patt,
     subdiv: sub,
     octave: oct,
-    vel: 0.24 + state.prng() * 0.08,  // stays quiet; backing, not lead
+    vel: 0.24 + state.prng() * 0.08,
     gateFrac: sub === 8 ? 0.72 : 0.55,
+    pan: -0.2,
   };
+  // ~50% of the time, spawn a second melody line that runs concurrently.
+  // Same subdivision (so they stay rhythmically aligned), different pattern
+  // from the library, slightly quieter and panned opposite.  Shares the
+  // current key so they harmonise automatically.
+  if (state.prng() < 0.5) {
+    let patt2 = MELODY_LINES[Math.floor(state.prng() * MELODY_LINES.length)];
+    // Try to avoid picking the same pattern object
+    for (let k = 0; k < 3 && patt2 === patt; k++) {
+      patt2 = MELODY_LINES[Math.floor(state.prng() * MELODY_LINES.length)];
+    }
+    // Second line sits a diatonic 3rd or 5th away so the two lines form
+    // a simple counterpoint in-key.  Sometimes at +1 octave for sparkle.
+    const degShift = state.prng() < 0.5 ? 2 : (state.prng() < 0.5 ? 4 : 7);
+    const oct2 = state.prng() < 0.25 ? oct + 1 : oct;
+    state.melodyLine2 = {
+      pattern: patt2,
+      subdiv: sub,
+      octave: oct2,
+      degShift,                              // added to every pattern degree
+      vel: 0.17 + state.prng() * 0.07,       // quieter than primary
+      gateFrac: sub === 8 ? 0.6 : 0.45,
+      pan: 0.3,
+      phaseOffset: state.prng() < 0.35 ? 2 : 0, // sometimes start half-beat late
+    };
+  } else {
+    state.melodyLine2 = null;
+  }
 }
 
 function pickSection() {
   const r = state.prng();
   state.mood = r < 0.3 ? 'chatter' : r < 0.55 ? 'new' : r < 0.8 ? 'memory' : 'hush';
   document.body.className = 'awake mood-' + state.mood;
-  state.intensity = state.mood === 'hush' ? 0.4
-                  : state.mood === 'chatter' ? 0.78
-                  : state.mood === 'memory' ? 0.55
-                  : 0.86;
+  const baseIntensity = state.mood === 'hush' ? 0.4
+                      : state.mood === 'chatter' ? 0.78
+                      : state.mood === 'memory' ? 0.55
+                      : 0.86;
+  // Apply the user's chill/excite bias on top of the mood baseline so the
+  // last button press keeps affecting intensity even across section changes.
+  state.intensity = Math.max(0.1, Math.min(1, baseIntensity + state.intensityBias));
   // Assign samples for the two voices from the current mood's pool.
   if (state.samples.length) {
     const pool = pickSamplesForMood(state.mood);
@@ -1086,6 +1126,19 @@ function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 
 // --- Transport ---
 function beatDuration() { return 60 / state.transport.bpm; }
 
+// Re-anchor transport.startTime when BPM changes, so the NEXT step to be
+// scheduled (state.transport.beatIndex) lands on the current audio-clock
+// moment instead of way in the future (chill) or way in the past (excite).
+// Without this, dropping BPM can silence the melody for several seconds
+// until the audio clock catches up to the newly-stretched step times.
+function changeBpm(newBpm) {
+  newBpm = Math.max(50, Math.min(200, newBpm));
+  if (!state.ctx) { state.transport.bpm = newBpm; return; }
+  const now = state.ctx.currentTime;
+  state.transport.startTime = now - (state.transport.beatIndex / 4) * (60 / newBpm);
+  state.transport.bpm = newBpm;
+}
+
 function startTransport() {
   if (state.transport.running) return;
   state.transport.running = true;
@@ -1169,31 +1222,54 @@ function scheduleStep(i, when) {
   // shape every 4 bars. The lead vocal locks onto this same line on its
   // downbeats so the vocal reinforces the hook instead of doing its own
   // thing.
-  const ml = state.melodyLine;
-  let melodyDegThisStep = null;   // what the melody line plays at THIS step (if any)
-  if (ml && ml.pattern && ml.pattern.length) {
-    // melody-line progression counter: how many line-steps into the song
+  // Helper: given a melody-line and the current global step `i`, return
+  // the scale-degree it wants to play at this step, or null if it isn't
+  // firing on this step.
+  function melodyDegAt(ml, offsetSteps = 0) {
+    if (!ml || !ml.pattern || !ml.pattern.length) return null;
     let lineStepIdx = null;
-    if (ml.subdiv === 8 && step % 2 === 0) {
-      lineStepIdx = bar * 8 + step / 2;
+    const off = offsetSteps || 0;
+    if (ml.subdiv === 8 && (step - off + 16) % 2 === 0) {
+      lineStepIdx = bar * 8 + Math.floor((step - off) / 2);
     } else if (ml.subdiv === 16) {
-      lineStepIdx = bar * 16 + step;
+      lineStepIdx = bar * 16 + (step - off);
+    } else {
+      return null;
     }
-    if (lineStepIdx != null) {
-      const patLen = ml.pattern.length;
-      const patIdx = ((lineStepIdx % patLen) + patLen) % patLen;
-      const deg = ml.pattern[patIdx] + ml.octave * 7;
+    if (lineStepIdx < 0) return null;
+    const patLen = ml.pattern.length;
+    const patIdx = ((lineStepIdx % patLen) + patLen) % patLen;
+    return ml.pattern[patIdx] + ml.octave * 7;
+  }
+
+  const ml = state.melodyLine;
+  let melodyDegThisStep = null;
+  if (ml) {
+    const deg = melodyDegAt(ml);
+    if (deg != null) {
       melodyDegThisStep = deg;
       state.melodyStep = deg;
-      // Fire the backing instrument — this is the audible melody line.
       const durMs = (beatDuration() * 1000) * (ml.subdiv === 8 ? 0.48 : 0.23) * ml.gateFrac;
-      const semis = degreeToSemitones(deg) - 12; // octave below so it sits under the vocal
+      const semis = degreeToSemitones(deg) - 12;
       scheduleInstrumentNote(when, semis, durMs, ml.vel);
-      // Every 4 bars add a sustained root under the melody so the harmony
-      // has a bass anchor (fat pop chord feel).
       if (step === 0 && bar % 2 === 0) {
         scheduleInstrumentNote(when, degreeToSemitones(0) - 24, durMs * 4, ml.vel * 0.9);
       }
+    }
+  }
+
+  // --- SECOND MELODY LINE (variation, same key & tempo) ---
+  // About half the sections run this concurrent hook alongside the primary.
+  // It's quieter, sits at a diatonic 3rd/5th/octave above, possibly starts
+  // half a beat later for an echo feel.
+  const ml2 = state.melodyLine2;
+  if (ml2) {
+    const deg2raw = melodyDegAt(ml2, ml2.phaseOffset);
+    if (deg2raw != null) {
+      const deg2 = deg2raw + (ml2.degShift || 0);
+      const durMs = (beatDuration() * 1000) * (ml2.subdiv === 8 ? 0.4 : 0.2) * ml2.gateFrac;
+      const semis = degreeToSemitones(deg2) - 12;
+      scheduleInstrumentNote(when, semis, durMs, ml2.vel);
     }
   }
 
@@ -1311,8 +1387,9 @@ async function autoRecord() {
 
 // Excite: persistently speed up + louden + make busier
 function excite() {
-  state.transport.bpm = Math.min(160, state.transport.bpm + 6);
-  state.intensity = Math.min(1, state.intensity + 0.18);
+  changeBpm(state.transport.bpm + 6);
+  state.intensityBias = Math.min(0.25, state.intensityBias + 0.08);
+  state.intensity = Math.max(0.1, Math.min(1, state.intensity + 0.18));
   state.excitement = Math.min(1, state.excitement + 0.55);
   // Reshuffle the three arp voices AND pick a new melody-line hook so the
   // whole song transforms when you press excite.
@@ -1323,8 +1400,9 @@ function excite() {
 }
 // Chill: slow down + soften
 function chill() {
-  state.transport.bpm = Math.max(62, state.transport.bpm - 6);
-  state.intensity = Math.max(0.15, state.intensity - 0.2);
+  changeBpm(state.transport.bpm - 6);
+  state.intensityBias = Math.max(-0.3, state.intensityBias - 0.1);
+  state.intensity = Math.max(0.1, state.intensity - 0.2);
   state.excitement = Math.max(0, state.excitement - 0.4);
 }
 // ======== INPUT (mouse modulates ongoing parameters) ========
@@ -1411,7 +1489,14 @@ function drawViz(dt) {
   // breathe
   viz.phase += dt * (0.6 + state.intensity * 1.2 + state.excitement * 0.8);
   const breath = 0.5 + Math.sin(viz.phase) * 0.5;
-  const r = baseR * (0.85 + breath * 0.2 + level * 0.6);
+  // Radius reacts strongly to intensity + excitement so chill pulls the
+  // circle in and excite pushes it out.  Smooth toward the target so
+  // presses feel like the instrument inhales / exhales instead of snapping.
+  const targetScale = 0.55 + state.intensity * 0.7 + state.excitement * 0.55;
+  viz.radiusScale = viz.radiusScale != null
+    ? viz.radiusScale + (targetScale - viz.radiusScale) * Math.min(1, dt * 3)
+    : targetScale;
+  const r = baseR * viz.radiusScale * (0.85 + breath * 0.18 + level * 0.5);
   // mouse parallax
   const mx = (state.mouse.x - 0.5) * 40;
   const my = (state.mouse.y - 0.5) * 40;

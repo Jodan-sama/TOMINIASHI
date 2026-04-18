@@ -19,6 +19,10 @@ const state = {
   lastGrainAt: 0,
   transport: { bpm: 96, beatIndex: 0, startTime: 0, running: false, keyBar: 0 },
   voices: { kick: true, click: true, shake: true, rain: true, arp: true },
+  // Two melody voices share the current scale/root. Lead plays slow + held.
+  // Counter plays faster + a diatonic 3rd or 5th above. Both switch together
+  // whenever pickSection re-runs.
+  melodyVoices: { leadId: null, counterId: null, counterOffset: 2 },
 };
 const STEPS_PER_BAR = 16;
 const KEY_CHANGE_EVERY_BARS = 8;
@@ -134,7 +138,7 @@ async function initAudio() {
   const ctx = new Ctor();
   if (ctx.state === 'suspended') await ctx.resume();
   const master = ctx.createGain();
-  master.gain.value = 0.7;
+  master.gain.value = 0.9;
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 1024;
   // reverb
@@ -150,14 +154,14 @@ async function initAudio() {
   delay.connect(feedback);
   feedback.connect(delay);
   const delSend = ctx.createGain();
-  delSend.gain.value = 0.2;
-  // Performance bus — melodic/user grains pass through a state-variable filter
+  delSend.gain.value = 0.18;
+  // Performance bus — melody sits up front. Open filter, hot gain.
   const perfFilter = ctx.createBiquadFilter();
   perfFilter.type = 'lowpass';
-  perfFilter.frequency.value = 3200;
-  perfFilter.Q.value = 1.5;
+  perfFilter.frequency.value = 6500;
+  perfFilter.Q.value = 0.8;
   const perfGain = ctx.createGain();
-  perfGain.gain.value = 0.85;
+  perfGain.gain.value = 1.45;
   perfGain.connect(perfFilter);
   perfFilter.connect(master);
   // Ambient bus — drones, long reverb tail, always very filtered
@@ -166,29 +170,29 @@ async function initAudio() {
   ambFilter.frequency.value = 1100;
   ambFilter.Q.value = 0.7;
   const ambGain = ctx.createGain();
-  ambGain.gain.value = 0.45;
+  ambGain.gain.value = 0.35;
   ambGain.connect(ambFilter);
   ambFilter.connect(master);
-  // Event bus — peaks, arpeggios; slight bandpass sheen
+  // Event bus — peaks, arpeggios; sits forward so arps are audible
   const eventGain = ctx.createGain();
-  eventGain.gain.value = 0.95;
+  eventGain.gain.value = 1.15;
   eventGain.connect(master);
-  // Drum bus — synthesized percussion
+  // Drum bus — synthesized percussion, gentle by default so melody sits above
   const drumBus = ctx.createGain();
-  drumBus.gain.value = 0.55;
+  drumBus.gain.value = 0.42;
   drumBus.connect(master);
   const drumVerb = ctx.createGain();
-  drumVerb.gain.value = 0.18;
+  drumVerb.gain.value = 0.14;
   drumBus.connect(drumVerb);
-  // Pad bus — continuous rain / noise bed
+  // Pad bus — continuous rain / noise bed. Very soft.
   const padBus = ctx.createGain();
-  padBus.gain.value = 0.0; // fade in after boot
+  padBus.gain.value = 0.0;
   padBus.connect(master);
-  // Filter LFO — modulates the perf filter cutoff so things breathe
+  // Filter LFO — gentle modulation on perf cutoff so things breathe
   const lfo = ctx.createOscillator();
   const lfoGain = ctx.createGain();
-  lfo.frequency.value = 0.15;
-  lfoGain.gain.value = 900;
+  lfo.frequency.value = 0.12;
+  lfoGain.gain.value = 500;
   lfo.connect(lfoGain);
   lfoGain.connect(perfFilter.frequency);
   lfo.start();
@@ -293,50 +297,52 @@ function startRainPad() {
   for (let c = 0; c < 2; c++) {
     const d = buf.getChannelData(c);
     let last = 0;
-    // brownian noise
     for (let i = 0; i < len; i++) {
-      last = (last + (Math.random() * 2 - 1) * 0.06) * 0.985;
+      last = (last + (Math.random() * 2 - 1) * 0.05) * 0.985;
       d[i] = last;
     }
   }
   const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
-  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1600; bp.Q.value = 0.6;
-  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4000;
-  const g = ctx.createGain(); g.gain.value = 0.9;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1200; bp.Q.value = 0.7;
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3400;
+  const g = ctx.createGain(); g.gain.value = 0.45;
   src.connect(bp); bp.connect(lp); lp.connect(g); g.connect(state.padBus);
-  // also send to reverb
-  const rg = ctx.createGain(); rg.gain.value = 0.35;
+  const rg = ctx.createGain(); rg.gain.value = 0.25;
   g.connect(rg); rg.connect(state.revSend);
   src.start();
-  // slow LFO on filter so it feels organic
   const lfo = ctx.createOscillator();
   const lfoGain = ctx.createGain();
-  lfo.frequency.value = 0.08;
-  lfoGain.gain.value = 500;
+  lfo.frequency.value = 0.06;
+  lfoGain.gain.value = 350;
   lfo.connect(lfoGain); lfoGain.connect(bp.frequency);
   lfo.start();
-  // occasional louder raindrops
+  // Sparse raindrops only — infrequent, quieter, and always darker so they
+  // don't compete with melody clarity.
   function drop() {
-    if (!state.voices.rain) { setTimeout(drop, 800); return; }
-    scheduleClick(ctx.currentTime + 0.01, 0.45, 2400 + Math.random() * 2500);
-    setTimeout(drop, 350 + Math.random() * 2400 / (0.3 + state.intensity));
+    if (!state.voices.rain) { setTimeout(drop, 1400); return; }
+    scheduleClick(ctx.currentTime + 0.01, 0.18 + Math.random() * 0.12, 1200 + Math.random() * 1400);
+    setTimeout(drop, 1400 + Math.random() * 3600);
   }
-  setTimeout(drop, 900);
-  // fade in pad
+  setTimeout(drop, 1800);
+  // Fade in pad much softer than before; mouse modulation can nudge it.
   state.padBus.gain.cancelScheduledValues(ctx.currentTime);
   state.padBus.gain.setValueAtTime(0, ctx.currentTime);
-  state.padBus.gain.linearRampToValueAtTime(0.18, ctx.currentTime + 4);
+  state.padBus.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 5);
 }
 // ======== SCALES / NOTES ========
+// Kept to pleasant, consonant scales. Major/minor + modal siblings that all
+// sound musical over triadic/pentatonic melodies.
 const SCALES = [
-  { name: 'minor pentatonic', steps: [0, 3, 5, 7, 10] },
   { name: 'major pentatonic', steps: [0, 2, 4, 7, 9] },
-  { name: 'dorian', steps: [0, 2, 3, 5, 7, 9, 10] },
-  { name: 'aeolian', steps: [0, 2, 3, 5, 7, 8, 10] },
-  { name: 'phrygian', steps: [0, 1, 3, 5, 7, 8, 10] },
-  { name: 'hirajoshi', steps: [0, 2, 3, 7, 8] },
-  { name: 'whole-tone', steps: [0, 2, 4, 6, 8, 10] },
+  { name: 'minor pentatonic', steps: [0, 3, 5, 7, 10] },
+  { name: 'major',            steps: [0, 2, 4, 5, 7, 9, 11] },
+  { name: 'natural minor',    steps: [0, 2, 3, 5, 7, 8, 10] },
+  { name: 'dorian',           steps: [0, 2, 3, 5, 7, 9, 10] },
+  { name: 'mixolydian',       steps: [0, 2, 4, 5, 7, 9, 10] },
+  { name: 'lydian',           steps: [0, 2, 4, 6, 7, 9, 11] },
 ];
+// Singer-friendly roots: C, D, F, G, A (and their minor equivalents).
+const NICE_ROOTS = [-12, -10, -7, -5, -3, 0, 2, 5, 7, 9];
 function scaleNow() { return SCALES[state.scaleIndex % SCALES.length]; }
 function degreeToSemitones(degree) {
   const sc = scaleNow();
@@ -430,19 +436,22 @@ function triggerGrain(rec, opts) {
   const panner = ctx.createStereoPanner();
   panner.pan.value = Math.max(-1, Math.min(1, pan));
   let tail = env;
-  // Per-grain color filter
-  const wantFilter = filterType || (mutation > 0.2 || layer === 'ambient' || Math.random() < 0.5);
+  // Per-grain color filter. Only applied when explicitly requested, when the
+  // sample is heavily mutated, or for ambient grains. Plain melody grains
+  // pass straight through so vocals stay clear (the perf bus filter already
+  // shapes them).
+  const wantFilter = filterType != null || filterHz != null || layer === 'ambient' || mutation > 0.4;
   if (wantFilter) {
     const bq = ctx.createBiquadFilter();
     if (filterType) bq.type = filterType;
-    else bq.type = mutation > 0.3 ? 'lowpass' : (Math.random() < 0.2 ? 'bandpass' : 'lowpass');
+    else bq.type = mutation > 0.4 ? 'lowpass' : 'lowpass';
     let freq = filterHz;
     if (freq == null) {
       if (layer === 'ambient') freq = 600 + Math.random() * 1200;
-      else freq = Math.max(500, 16000 * (1 - mutation * 0.85) * (0.5 + state.mouse.x));
+      else freq = Math.max(500, 16000 * (1 - mutation * 0.85));
     }
     bq.frequency.value = freq;
-    bq.Q.value = filterQ != null ? filterQ : (bq.type === 'bandpass' ? 2.5 : 0.7);
+    bq.Q.value = filterQ != null ? filterQ : (bq.type === 'bandpass' ? 2.5 : 0.6);
     env.connect(bq);
     tail = bq;
   }
@@ -583,71 +592,90 @@ function stepMelody() {
   return state.melodyStep;
 }
 
-// Mood picker: runs every 4 bars, picks a musical "section"
+// Section picker: every 4 bars. Re-picks mood, intensity, and — crucially —
+// the two melody voice samples so lead + counter change together.
 function pickSection() {
   const r = state.prng();
   state.mood = r < 0.3 ? 'chatter' : r < 0.55 ? 'new' : r < 0.8 ? 'memory' : 'hush';
   document.body.className = 'awake mood-' + state.mood;
-  // Section intensity sets baseline
-  const base = state.mood === 'hush' ? 0.35
-             : state.mood === 'chatter' ? 0.8
-             : state.mood === 'memory' ? 0.55
-             : 0.9;
-  state.intensity = base;
+  state.intensity = state.mood === 'hush' ? 0.38
+                  : state.mood === 'chatter' ? 0.78
+                  : state.mood === 'memory' ? 0.55
+                  : 0.86;
+  // Assign samples for the two voices from the current mood's pool.
+  if (state.samples.length) {
+    const pool = pickSamplesForMood(state.mood);
+    const lead = pool[Math.floor(state.prng() * pool.length)];
+    let counter = pool[Math.floor(state.prng() * pool.length)];
+    // Try up to 4 times to get a distinct counter sample
+    for (let k = 0; k < 4 && counter && lead && counter.id === lead.id && pool.length > 1; k++) {
+      counter = pool[Math.floor(state.prng() * pool.length)];
+    }
+    state.melodyVoices.leadId = lead ? lead.id : null;
+    state.melodyVoices.counterId = counter ? counter.id : null;
+    // Diatonic 3rd (2 scale steps) most of the time, 5th (4 steps) sometimes
+    state.melodyVoices.counterOffset = state.prng() < 0.7 ? 2 : 4;
+  }
 }
 function pickNewKey() {
-  state.scaleIndex = Math.floor(state.prng() * SCALES.length);
-  state.scaleRoot = Math.floor(state.prng() * 12) - 6;
+  // Favor pentatonic + major / minor; rarer modes show up occasionally.
+  const scaleWeights = [0.25, 0.2, 0.2, 0.15, 0.08, 0.08, 0.04];
+  let r = state.prng();
+  let i = 0;
+  for (; i < scaleWeights.length - 1; i++) { if ((r -= scaleWeights[i]) < 0) break; }
+  state.scaleIndex = i;
+  state.scaleRoot = NICE_ROOTS[Math.floor(state.prng() * NICE_ROOTS.length)];
 }
 
 // --- Note trigger aligned to grid ---
 function playNote(full, meta, when, opts = {}) {
-  const p = state.genome.params;
   const {
     degree = stepMelody(),
     vel = 0.55,
     durationMs = null,
     layer = 'perf',
-    filterHz = null,
+    filterHz = null,     // null => no per-grain filter for melody (perf bus shapes it)
     extraDetune = 0,
     panOverride = null,
   } = opts;
-  const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 12);
-  // Grain duration: shorter + choppier when energetic, longer when chill
-  const gMin = p.grainMinMs + 30;
-  const gMax = Math.max(gMin + 40, p.grainMaxMs * (0.5 + state.intensity));
-  const dur = durationMs != null ? durationMs : gMin + state.prng() * (gMax - gMin);
-  const clampedDur = Math.min(dur, Math.max(40, meta.durationMs - 20));
+  // Mouse X nudges the transposition but stays small enough that the key
+  // remains obvious.
+  const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 6);
+  const dur = durationMs != null ? durationMs : 500 + state.prng() * 500;
+  const clampedDur = Math.min(dur, Math.max(60, meta.durationMs - 20));
   const maxOffset = Math.max(0, meta.durationMs - clampedDur);
-  const offsetMs = state.prng() * maxOffset;
+  // Prefer the meaty middle of the sample for vocal clarity
+  const offsetMs = Math.min(maxOffset, Math.max(0, meta.durationMs * 0.1 + state.prng() * maxOffset * 0.7));
   const rate = rateForDegree(transposedDegree);
-  const pan = panOverride != null ? panOverride : (Math.sin(state.melodyStep * 0.6) * 0.5 + (state.prng() * 2 - 1) * 0.35);
-  const cutoff = filterHz != null ? filterHz : 600 + (1 - state.mouse.y) * 9000 + state.prng() * 1200;
+  const pan = panOverride != null ? panOverride : (Math.sin(state.melodyStep * 0.6) * 0.45 + (state.prng() * 2 - 1) * 0.2);
   triggerGrain(full, {
     offsetMs, durationMs: clampedDur,
-    rate: Math.max(0.15, Math.min(5, rate)),
+    rate: Math.max(0.25, Math.min(4, rate)),
     pan, gain: vel,
     mutation: meta.mutationLevel,
-    layer, filterHz: cutoff,
-    detuneCents: (state.prng() * 2 - 1) * 10 + extraDetune,
+    layer, filterHz,
+    detuneCents: (state.prng() * 2 - 1) * 5 + extraDetune,
     when,
   });
   meta.lastPlayedAt = Date.now();
 }
 
-// Arpeggio patterns (scale degrees) — one of these runs when requested
+// Arpeggio patterns expressed as scale degrees. Built from triads and
+// seventh chords so they always land inside the current key.
 const ARP_PATTERNS = [
-  [0, 2, 4, 7],           // upward
-  [7, 4, 2, 0],           // downward
-  [0, 4, 2, 7, 4, 9],     // zig-zag
-  [0, 7, 2, 9, 4, 11],    // wide leaps
-  [0, 2, 4, 5, 7, 9, 11], // scale run
-  [0, 3, 5, 7, 10, 7, 5, 3], // pentatonic
+  [0, 2, 4, 7, 4, 2],           // ascending triad + seventh + back
+  [0, 2, 4, 2],                 // lilt on a triad
+  [0, 4, 2, 4],                 // alberti-ish
+  [7, 4, 2, 0, 2, 4],           // descend + return
+  [0, 2, 4, 6, 4, 2],           // diatonic seventh
+  [0, 2, 4, 7, 9, 7, 4, 2],     // broad eight-note climb/fall
+  [0, 4, 7, 4, 2, 4],           // spread voicing
 ];
 
 function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 1) {
-  const pool = pickSamplesForMood(state.mood);
-  const meta = pickSample(pool);
+  // Arpeggio uses the lead voice sample so it's consonant with the melody.
+  const leadId = state.melodyVoices.leadId;
+  const meta = state.samples.find(s => s.id === leadId) || pickSample(state.samples);
   if (!meta) return;
   state.store.get(meta.id).then(full => {
     if (!full) return;
@@ -655,16 +683,19 @@ function scheduleArpeggio(startWhen, stepsBeats = 8, baseDegree = 0, velScale = 
     const sixteenth = beatDuration() / 4;
     const steps = stepsBeats * 4;
     for (let i = 0; i < steps; i++) {
-      const deg = baseDegree + pattern[i % pattern.length] + (i >= pattern.length ? 7 : 0);
+      const pIdx = i % pattern.length;
+      // Layer octaves as the arp progresses so it "builds"
+      const octaveJump = Math.floor(i / pattern.length) * 7;
+      const deg = baseDegree + pattern[pIdx] + octaveJump;
       const t = startWhen + i * sixteenth;
       playNote(full, meta, t, {
         degree: deg,
-        vel: (0.45 + (i % 4 === 0 ? 0.18 : 0)) * velScale,
-        durationMs: 90 + state.prng() * 100,
+        vel: (0.52 + (pIdx === 0 ? 0.2 : 0)) * velScale,
+        durationMs: 220 + state.prng() * 160,
         layer: 'event',
-        filterHz: 1200 + (i * 160) + state.prng() * 800,
-        extraDetune: (state.prng() * 2 - 1) * 6,
-        panOverride: (i / steps) * 1.4 - 0.7,
+        filterHz: 2400 + (i * 120) + state.prng() * 600,
+        extraDetune: (state.prng() * 2 - 1) * 4,
+        panOverride: Math.sin(i * 0.7) * 0.6,
       });
     }
   });
@@ -698,117 +729,136 @@ function schedulerLoop() {
   setTimeout(schedulerLoop, 25);
 }
 
+// Helper: fetch a full sample record for a voice slot, falling back to any
+// available sample if the voice was never assigned or the stored record got
+// culled.
+function getVoiceSample(slot) {
+  const id = slot === 'lead' ? state.melodyVoices.leadId : state.melodyVoices.counterId;
+  let meta = id ? state.samples.find(s => s.id === id) : null;
+  if (!meta) meta = pickSample(state.samples);
+  return meta;
+}
+
 function scheduleStep(i, when) {
   const step = i % STEPS_PER_BAR;
   const bar = Math.floor(i / STEPS_PER_BAR);
-  const beat = step / 4;
   const onBeat = step % 4 === 0;
   const offbeat = step % 4 === 2;
   const sixteenth = beatDuration() / 4;
 
   // --- Structure / section changes ---
-  if (step === 0 && bar > 0 && bar % 4 === 0) {
-    pickSection();
-  }
+  if (step === 0 && bar > 0 && bar % 4 === 0) pickSection();
   if (step === 0 && bar > 0 && bar % KEY_CHANGE_EVERY_BARS === 0) {
     pickNewKey();
     state.transport.keyBar = bar;
   }
 
   // --- DRUMS ---
-  // Kick pattern varies with intensity
   if (state.voices.kick) {
-    // Always downbeat 1, sometimes 3
-    if (step === 0) scheduleKick(when, 0.75);
-    if (step === 8 && state.intensity > 0.3) scheduleKick(when, 0.6);
-    if (state.intensity > 0.7) {
-      if (step === 4 && state.prng() < 0.5) scheduleKick(when, 0.45);
-      if (step === 12 && state.prng() < 0.6) scheduleKick(when, 0.55);
-    }
-    if (state.excitement > 0.5 && state.prng() < 0.25) scheduleKick(when + sixteenth * 0.5, 0.35);
+    if (step === 0) scheduleKick(when, 0.72);
+    if (step === 8 && state.intensity > 0.35) scheduleKick(when, 0.55);
+    if (state.intensity > 0.75 && step === 12 && state.prng() < 0.55) scheduleKick(when, 0.42);
+    if (state.excitement > 0.6 && state.prng() < 0.2) scheduleKick(when + sixteenth * 0.5, 0.3);
   }
-  // Soft clicks on every 16th-ish — density from intensity
+  // Clicks, sparser than before — they were crowding the melody
   if (state.voices.click) {
-    const clickProb = 0.15 + state.intensity * 0.5 + state.excitement * 0.3;
-    if (state.prng() < clickProb) {
-      scheduleClick(when, 0.25 + state.prng() * 0.3, 1800 + state.prng() * 2600);
+    if (offbeat) scheduleClick(when, 0.25, 2800 + state.prng() * 1400);
+    if (state.intensity > 0.6 && step % 4 === 3 && state.prng() < 0.5) {
+      scheduleClick(when, 0.2, 3400 + state.prng() * 1200);
     }
-    // emphasis on off-beats
-    if (offbeat) scheduleClick(when, 0.35, 3200 + state.prng() * 1800);
   }
-  // Shaker on 16th subdivisions when busy
-  if (state.voices.shake && state.intensity > 0.4) {
-    if (step % 2 === 1 && state.prng() < 0.5 + state.excitement * 0.3) {
-      scheduleShake(when, 0.28);
+  // Shaker on off-16ths when busy — very light
+  if (state.voices.shake && state.intensity > 0.55) {
+    if (step % 2 === 1 && state.prng() < 0.35 + state.excitement * 0.25) {
+      scheduleShake(when, 0.2);
     }
   }
 
-  // --- MELODY ---
-  if (state.samples.length) {
-    const pool = pickSamplesForMood(state.mood);
-    const meta = pickSample(pool);
-    if (meta) {
-      // Note density: strong on downbeats, probabilistic on offbeats
-      let prob = 0;
-      if (onBeat) prob = 0.85;
-      else if (step % 2 === 0) prob = 0.55 + state.intensity * 0.3;
-      else prob = 0.25 + state.intensity * 0.4 + state.excitement * 0.3;
-      if (state.prng() < prob) {
-        state.store.get(meta.id).then(full => {
-          if (!full) return;
-          const vel = (onBeat ? 0.58 : offbeat ? 0.48 : 0.38)
-                    + state.prng() * 0.12
-                    + state.excitement * 0.1;
-          playNote(full, meta, when, {
-            vel: vel * (0.5 + (1 - state.mouse.y) * 0.7),
-          });
+  if (!state.samples.length) return;
+
+  // --- LEAD VOICE (held, long vocal notes) ---
+  // Lead hits every beat (0,4,8,12). Durations are long enough to actually
+  // hear the vocal — 700 ms to 1800 ms. Ornament notes at half-beat when
+  // intensity is high.
+  const leadMeta = getVoiceSample('lead');
+  if (leadMeta) {
+    const leadBaseDegrees = [0, 2, 4, 2, 5, 4, 2, 0]; // bar-level motif
+    const leadOn = onBeat || (step === 6 && state.intensity > 0.6) || (step === 14 && state.prng() < 0.45);
+    if (leadOn) {
+      const motifIdx = (bar * 4 + Math.floor(step / 4)) % leadBaseDegrees.length;
+      const baseDeg = leadBaseDegrees[motifIdx];
+      // Small random drift around the motif
+      const deg = baseDeg + (state.prng() < 0.4 ? (state.prng() < 0.5 ? -2 : 2) : 0);
+      state.melodyStep = deg;
+      state.store.get(leadMeta.id).then(full => {
+        if (!full) return;
+        const durMs = 700 + state.prng() * 1100;
+        const vel = (onBeat ? 0.75 : 0.55) + state.prng() * 0.1;
+        playNote(full, leadMeta, when, {
+          degree: deg,
+          vel,
+          durationMs: durMs,
+          layer: 'perf',
+          panOverride: Math.sin(bar * 0.6) * 0.4 + (state.prng() * 2 - 1) * 0.15,
         });
-      }
-      // Overlapping counter-melody: on busier sections, play a harmonic 3rd/5th in parallel
-      if (state.intensity > 0.6 && onBeat && state.prng() < 0.4) {
-        const meta2 = pickSample(pool);
-        if (meta2 && meta2.id !== meta.id) {
-          state.store.get(meta2.id).then(full2 => {
-            if (!full2) return;
-            playNote(full2, meta2, when + sixteenth * 0.1, {
-              degree: stepMelody() + (state.prng() < 0.5 ? 2 : 4),
-              vel: 0.38, layer: 'perf',
-              panOverride: (state.prng() < 0.5 ? -0.6 : 0.6),
-            });
-          });
-        }
-      }
+      });
     }
   }
 
-  // --- ARPEGGIOS (more frequent when excited) ---
-  if (step === 0 && state.samples.length) {
-    const arpProb = 0.1 + state.intensity * 0.3 + state.excitement * 0.5;
-    if (bar % 2 === 0 && state.prng() < arpProb) {
-      const stepsBeats = state.excitement > 0.5 ? 8 : 4;
-      scheduleArpeggio(when + beatDuration() * 0.5, stepsBeats, Math.floor(state.prng() * 5), 0.9);
+  // --- COUNTER VOICE (faster filler, diatonic 3rd/5th above lead) ---
+  // Fires on off-beats (2, 6, 10, 14) and extra 16ths when busy. Shorter so
+  // it fills between lead notes without muddying them.
+  const counterMeta = getVoiceSample('counter');
+  if (counterMeta) {
+    let counterOn = false;
+    if (offbeat) counterOn = true;
+    else if (step % 2 === 1 && state.prng() < 0.25 + state.intensity * 0.4) counterOn = true;
+    if (counterOn) {
+      const deg = state.melodyStep + state.melodyVoices.counterOffset
+                + (state.prng() < 0.2 ? (state.prng() < 0.5 ? -2 : 2) : 0);
+      state.store.get(counterMeta.id).then(full => {
+        if (!full) return;
+        const durMs = 400 + state.prng() * 520;
+        const vel = (offbeat ? 0.5 : 0.38) + state.prng() * 0.08;
+        playNote(full, counterMeta, when, {
+          degree: deg,
+          vel,
+          durationMs: durMs,
+          layer: 'perf',
+          panOverride: -Math.sin(bar * 0.6) * 0.5 + (state.prng() * 2 - 1) * 0.15,
+        });
+      });
     }
   }
 
-  // --- AMBIENT drone: slow, every 4 beats pick a sustained grain ---
-  if (step === 0 && bar % 2 === 0 && state.samples.length) {
-    const pool = pickSamplesForMood(state.mood === 'chatter' ? 'memory' : state.mood);
-    const m = pickSample(pool);
+  // --- ARPEGGIOS: more frequent, always in-key, use lead voice sample ---
+  if (step === 0 && bar % 2 === 0) {
+    const arpProb = 0.28 + state.intensity * 0.35 + state.excitement * 0.45;
+    if (state.prng() < arpProb) {
+      const stepsBeats = state.excitement > 0.4 ? 8 : 4;
+      const baseDeg = [0, 0, 2, 4][Math.floor(state.prng() * 4)];
+      scheduleArpeggio(when + beatDuration() * 0.5, stepsBeats, baseDeg, 0.95);
+    }
+  }
+
+  // --- AMBIENT drone: root + fifth, sparse, kept quiet ---
+  if (step === 0 && bar % 4 === 0) {
+    const m = getVoiceSample('lead');
     if (m) {
       state.store.get(m.id).then(full => {
         if (!full) return;
-        const st = [-12, -7, 0, 7][Math.floor(state.prng() * 4)];
+        const st = state.prng() < 0.6 ? -12 : -5; // root or fifth below
         triggerGrain(full, {
           offsetMs: state.prng() * Math.max(0, m.durationMs - 1600),
-          durationMs: 1400 + state.prng() * 1800,
+          durationMs: 1600 + state.prng() * 1800,
           rate: rateForSemitones(st),
-          pan: (state.prng() * 2 - 1) * 0.85,
-          gain: 0.16 + state.prng() * 0.1,
+          pan: (state.prng() * 2 - 1) * 0.7,
+          gain: 0.14 + state.prng() * 0.08,
           mutation: Math.max(m.mutationLevel, 0.3),
           layer: 'ambient', filterType: 'lowpass',
-          filterHz: 500 + state.prng() * 800 + (1 - state.mouse.y) * 800,
+          filterHz: 520 + (1 - state.mouse.y) * 600,
           filterQ: 0.6,
-          revSend: 0.9, delSend: 0.2,
+          revSend: 0.85, delSend: 0.15,
           when,
         });
       });
@@ -858,25 +908,26 @@ function initInput() {
     if (state.ctx) {
       const t = state.ctx.currentTime;
       if (state.perfFilter) {
-        const base = 400 + (1 - state.mouse.y) * 8400;
-        const target = base * (0.85 + state.excitement * 0.4);
+        // Keep melody bright by default; mouse Y sweeps from smoky → open
+        const base = 1800 + (1 - state.mouse.y) * 10000;
+        const target = base * (0.9 + state.excitement * 0.3);
         try {
-          state.perfFilter.frequency.setTargetAtTime(target, t, 0.08);
-          state.perfFilter.Q.setTargetAtTime(0.8 + state.mouse.y * 4 + state.excitement * 2, t, 0.12);
+          state.perfFilter.frequency.setTargetAtTime(target, t, 0.1);
+          state.perfFilter.Q.setTargetAtTime(0.7 + state.mouse.y * 2.5, t, 0.15);
         } catch (e) {}
       }
       if (state.ambFilter) {
-        const amb = 300 + (1 - state.mouse.y) * 1800;
-        try { state.ambFilter.frequency.setTargetAtTime(amb, t, 0.2); } catch (e) {}
+        const amb = 300 + (1 - state.mouse.y) * 1400;
+        try { state.ambFilter.frequency.setTargetAtTime(amb, t, 0.25); } catch (e) {}
       }
       if (state.drumBus) {
-        // drums softer when chill, louder when excited
-        const drumTarget = 0.4 + state.intensity * 0.4 + state.excitement * 0.25;
+        const drumTarget = 0.28 + state.intensity * 0.3 + state.excitement * 0.2;
         try { state.drumBus.gain.setTargetAtTime(drumTarget, t, 0.3); } catch (e) {}
       }
       if (state.padBus) {
-        const padTarget = 0.1 + (1 - state.intensity) * 0.2;
-        try { state.padBus.gain.setTargetAtTime(padTarget, t, 0.8); } catch (e) {}
+        // Max 0.08 no matter what — rain never dominates.
+        const padTarget = 0.035 + (1 - state.intensity) * 0.04;
+        try { state.padBus.gain.setTargetAtTime(padTarget, t, 1.0); } catch (e) {}
       }
     }
     requestAnimationFrame(driveFilter);

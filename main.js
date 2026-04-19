@@ -53,6 +53,9 @@ const state = {
   // Persistence sharing preferences (stored in localStorage)
   shareMyBreaths: localStorage.getItem(LS_SHARE_BREATHS) === '1',
   includeSharedPool: localStorage.getItem(LS_INCLUDE_SHARED) === '1',
+  // Cloud activity counters so we can see at a glance whether sync is
+  // working.  Bumped by pushSample / pullSamples call-sites.
+  cloud: { pushOK: 0, pushFail: 0, pullOK: 0, pullFail: 0, lastError: null },
   // Three continuous arpeggiator voices. Each has its own pattern, step
   // subdivision, octave offset, gate fraction, and assigned sample.
   // Polyrhythm emerges from mismatched pattern lengths (e.g. 4-vs-6-vs-3).
@@ -180,6 +183,7 @@ function sampleMeta(s) {
     storagePath: s.storagePath || null,
     shared: !!s.shared,
     genomeId: s.genomeId || null,
+    fromCloud: !!s.fromCloud,
   };
 }
 // ======== AUDIO ========
@@ -608,6 +612,39 @@ function rateForDegreeOnSample(degree, sampleHz, octaveBias = 0) {
 // `targetPeak`. Only scales DOWN — leaves quieter recordings alone so we
 // don't amplify noise floors. Returns the scale factor applied (1 if
 // untouched).
+// Encode a mono Float32 PCM buffer as a 16-bit WAV Blob.  Used for
+// derived samples that never touched MediaRecorder (we only have raw PCM).
+function pcmToWavBlob(pcm, sampleRate) {
+  const numChannels = 1;
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = pcm.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const wstr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  wstr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  wstr(8, 'WAVE');
+  wstr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);              // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  wstr(36, 'data');
+  view.setUint32(40, dataSize, true);
+  let o = 44;
+  for (let i = 0; i < pcm.length; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    view.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    o += 2;
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
 function normalizePcmInPlace(pcm, targetPeak = 0.65) {
   if (!pcm || !pcm.length) return 1;
   let peak = 0;
@@ -686,8 +723,21 @@ async function recordBreath(durMs = 3000) {
         shared: record.shared,
         detected_hz: detectedHz,
       }).then(path => {
-        if (path) { record.storagePath = path; meta.storagePath = path; state.store.update(record.id, { storagePath: path }).catch(() => {}); }
-      }).catch(e => console.warn('cloud upload failed', e));
+        if (path) {
+          record.storagePath = path; meta.storagePath = path;
+          state.store.update(record.id, { storagePath: path }).catch(() => {});
+          state.cloud.pushOK++;
+          console.log('[cloud] pushed mic sample', record.id.slice(0, 8));
+        } else {
+          state.cloud.pushFail++;
+          state.cloud.lastError = 'push mic returned null';
+          console.warn('[cloud] mic push returned null path');
+        }
+      }).catch(e => {
+        state.cloud.pushFail++;
+        state.cloud.lastError = String(e && e.message || e);
+        console.warn('[cloud] mic upload failed', e);
+      });
     }
     return record;
   } finally {
@@ -872,9 +922,47 @@ async function deriveSample(parentMeta) {
     source: 'derived', survivalScore: 0.8,
     parentId: parentMeta.id,
     detectedHz,
+    storagePath: null,
+    shared: !!parentMeta.shared,
+    genomeId: state.genome.id,
   };
   await state.store.add(rec);
-  state.samples.push(sampleMeta(rec));
+  const meta = sampleMeta(rec);
+  state.samples.push(meta);
+  // Cloud upload for derived samples too — uses our WAV encoder since
+  // derived PCM never went through MediaRecorder.  Fire-and-forget so
+  // the evolver doesn't stall on network.
+  if (cloudReady) {
+    const wav = pcmToWavBlob(child, sr);
+    pushSample({
+      id: rec.id,
+      genome_id: state.genome.id,
+      blob: wav, mime: 'audio/wav',
+      sample_rate: sr,
+      duration_ms: (child.length / sr) * 1000,
+      recorded_at: rec.recordedAt,
+      generation: rec.generation,
+      mutation_level: rec.mutationLevel,
+      source: 'derived',
+      survival_score: rec.survivalScore,
+      parent_id: parentMeta.id,
+      shared: rec.shared,
+      detected_hz: detectedHz,
+    }).then(path => {
+      if (path) {
+        rec.storagePath = path; meta.storagePath = path;
+        state.store.update(rec.id, { storagePath: path }).catch(() => {});
+        state.cloud.pushOK++;
+      } else {
+        state.cloud.pushFail++;
+        state.cloud.lastError = 'push derived returned null';
+      }
+    }).catch(e => {
+      state.cloud.pushFail++;
+      state.cloud.lastError = String(e && e.message || e);
+      console.warn('[cloud] derived upload failed', e);
+    });
+  }
 }
 async function evolveTick() {
   const params = state.genome.params;
@@ -1873,8 +1961,15 @@ function drawViz(dt) {
     const dx = cx + Math.cos(a) * orbit;
     const dy = cy + Math.sin(a) * orbit * 0.55;
     const dotR = 3 + s.survivalScore * 3;
-    const fadedColor = s.mutationLevel > 0.5 ? '#8a7f6c' : col;
-    c.fillStyle = fadedColor + 'cc';
+    // Cloud-origin samples get a constant mint colour regardless of mood,
+    // so it's obvious at a glance which breaths came in over the network.
+    // Local mic recordings follow the mood colour (fading to a dull tan
+    // as they fossilise).
+    let dotColor;
+    if (s.fromCloud) dotColor = '#8fe3b5';                           // mint
+    else if (s.mutationLevel > 0.5) dotColor = '#8a7f6c';            // fossil
+    else dotColor = col;                                              // mood
+    c.fillStyle = dotColor + 'cc';
     c.beginPath();
     c.arc(dx, dy, dotR, 0, Math.PI * 2);
     c.fill();
@@ -1931,6 +2026,22 @@ function updateReadouts() {
   el('r-samples').textContent = state.samples.length;
   el('r-wakes').textContent = g.activationCount;
   el('r-age').textContent = fmtTime(Date.now() - g.birthday);
+  // Cloud activity readout — visible proof that sync is working.
+  const rCloud = el('r-cloud');
+  if (rCloud) {
+    if (!cloudReady) {
+      rCloud.textContent = 'offline';
+    } else {
+      const c = state.cloud;
+      const bits = [
+        (c.pushOK ? c.pushOK + '↑' : ''),
+        (c.pullOK ? c.pullOK + '↓' : ''),
+        ((c.pushFail || c.pullFail) ? '✕' + (c.pushFail + c.pullFail) : ''),
+      ].filter(Boolean);
+      rCloud.textContent = bits.length ? bits.join(' ') : 'ready';
+      if (c.lastError) rCloud.title = 'last error: ' + c.lastError;
+    }
+  }
   const now = Date.now();
   let oldest = 0;
   for (const s of state.samples) { const a = now - s.recordedAt; if (a > oldest) oldest = a; }
@@ -2164,13 +2275,20 @@ async function syncCloudSamples() {
         shared: rs.shared,
         genomeId: rs.genome_id,
         detectedHz,
+        // Mark this record as cloud-origin so the viz can draw it mint.
+        fromCloud: true,
       };
       await state.store.add(record);
       const meta = sampleMeta(record);
       state.samples.push(meta);
       added++;
-    } catch (e) { console.warn('sample sync failed for', rs.id, e); }
+    } catch (e) {
+      state.cloud.pullFail++;
+      state.cloud.lastError = String(e && e.message || e);
+      console.warn('[cloud] sample sync failed for', rs.id, e);
+    }
   }
+  state.cloud.pullOK += added;
   if (added) console.log('[cloud] pulled', added, 'samples');
 }
 

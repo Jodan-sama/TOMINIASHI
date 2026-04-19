@@ -883,8 +883,11 @@ async function evolveTick() {
     meta.mutationLevel = Math.min(1, meta.mutationLevel + params.degradationRate * (0.5 + state.prng()));
     if (state.prng() < 0.06) meta.survivalScore *= 0.88;
     try { await state.store.update(meta.id, { mutationLevel: meta.mutationLevel, survivalScore: meta.survivalScore }); } catch (e) {}
-    // Only sync samples that actually live in the cloud (mic recordings).
-    if (cloudReady && meta.storagePath) {
+    // Only sync cloud updates for samples this genome actually owns.
+    // Samples carried over from visited instruments (different genomeId)
+    // age in the local cache but don't mutate the cloud row of the
+    // instrument that originally uploaded them.
+    if (cloudReady && meta.storagePath && meta.genomeId === state.genome.id) {
       cloudSampleUpdates.push({ id: meta.id, patch: { mutation_level: meta.mutationLevel, survival_score: meta.survivalScore } });
     }
   }
@@ -897,7 +900,10 @@ async function evolveTick() {
   const dead = state.samples.filter((s) => s.survivalScore < 0.05);
   for (const s of dead) {
     try { await state.store.del(s.id); } catch (e) {}
-    if (cloudReady && s.storagePath) {
+    // Only delete from cloud if this genome owns the sample.  Visited
+    // samples just vanish from our local pool; the original instrument's
+    // cloud row is left intact.
+    if (cloudReady && s.storagePath && s.genomeId === state.genome.id) {
       deleteSample(s.id, s.storagePath).catch(() => {});
     }
   }
@@ -2001,7 +2007,7 @@ function wireControls() {
     homeRow.addEventListener('click', async () => {
       const home = homeGenomeId();
       if (!home) return;
-      if (!confirm('Return to your home instrument (' + home.slice(0, 8) + '…)?\n\nThe current sample cache will be cleared.')) return;
+      if (!confirm('Return to your home instrument (' + home.slice(0, 8) + '…)?\n\nYour sample pool is kept — you carry the memories with you.')) return;
       const placeholder = {
         id: home,
         seed: (Math.random() * 4294967296) >>> 0,
@@ -2011,7 +2017,8 @@ function wireControls() {
         activationCount: 0,
       };
       localStorage.setItem(LS_GENOME, JSON.stringify(placeholder));
-      if (state.store) { try { await state.store.clear(); } catch (e) {} }
+      // IDB is NOT cleared — the user's sample pool persists across visits
+      // and returns, so breaths never get orphaned.
       location.reload();
     });
   }
@@ -2033,8 +2040,8 @@ function wireControls() {
         return;
       }
       const home = homeGenomeId();
-      const note = home && raw !== home ? ' (↶ RETURN HOME takes you back to your original.)' : '';
-      if (!confirm('Visit instrument ' + raw.slice(0, 8) + '…?\n\nYour local sample cache will be cleared.' + note)) return;
+      const note = home && raw !== home ? ' (↶ RETURN HOME takes you back.)' : '';
+      if (!confirm('Visit instrument ' + raw.slice(0, 8) + '…?\n\nYour sample pool stays — the visit adds the new instrument\'s environment on top of your own breaths.' + note)) return;
       try {
         // Write a placeholder genome record so boot knows the id it should
         // pull. Params/generation get overwritten by syncCloudGenome on boot.
@@ -2047,8 +2054,9 @@ function wireControls() {
           activationCount: 0,
         };
         localStorage.setItem(LS_GENOME, JSON.stringify(placeholder));
-        // Wipe the local sample cache so old samples don't leak into the new instrument.
-        if (state.store) { try { await state.store.clear(); } catch (e) {} }
+        // IDB is NOT cleared — the user's own samples stay put.  boot +
+        // syncCloudSamples will ADD any samples owned by the visited
+        // instrument to the existing pool (additive, never destructive).
         location.reload();
       } catch (e) {
         console.error('import failed', e);

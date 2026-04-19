@@ -225,7 +225,9 @@ async function initAudio() {
   perfFilter.frequency.value = 6500;
   perfFilter.Q.value = 0.8;
   const perfGain = ctx.createGain();
-  perfGain.gain.value = 1.2;
+  // Nudged slightly above the old 1.2 so recorded breaths sit a touch
+  // more forward against the synthesized pads and instruments.
+  perfGain.gain.value = 1.28;
   perfGain.connect(perfFilter);
   perfFilter.connect(master);
   // Ambient bus — drones, long reverb tail, always very filtered
@@ -656,6 +658,22 @@ function normalizePcmInPlace(pcm, targetPeak = 0.65) {
   for (let i = 0; i < pcm.length; i++) pcm[i] *= factor;
   return factor;
 }
+
+// Raise very quiet recordings toward a minimum peak so whispered breaths
+// are still audible. Capped boost factor so we don't multiply the noise
+// floor on near-silent takes into a hiss. Only scales UP.
+function raiseQuietPcmInPlace(pcm, targetFloor = 0.35, maxBoost = 3) {
+  if (!pcm || !pcm.length) return 1;
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    const a = Math.abs(pcm[i]);
+    if (a > peak) peak = a;
+  }
+  if (peak <= 0 || peak >= targetFloor) return 1;
+  const factor = Math.min(maxBoost, targetFloor / peak);
+  for (let i = 0; i < pcm.length; i++) pcm[i] *= factor;
+  return factor;
+}
 let micStream = null;
 async function ensureMic() {
   if (micStream) return micStream;
@@ -681,10 +699,11 @@ async function recordBreath(durMs = 3000) {
     const audioBuf = await state.ctx.decodeAudioData(ab);
     const pcm = audioBuf.getChannelData(0).slice();
     // Peak-normalize loud recordings so a shouted breath doesn't dominate
-    // quiet ones.  Only scale DOWN (factor < 1) — we don't want to boost
-    // quiet samples and amplify their noise floor. Target peak 0.8 is
-    // "pretty hot but not clipping".
+    // quiet ones.  Only scales DOWN (factor < 1). Then raiseQuiet brings
+    // whispered takes up toward an audible floor with a capped boost, so
+    // extremely soft breaths aren't lost once they mix with the music.
     normalizePcmInPlace(pcm, 0.65);
+    raiseQuietPcmInPlace(pcm, 0.35, 3);
     // Run YIN pitch detection so we can pitch-correct playback. Synchronous
     // but fast (~20-40ms for 2048 samples); acceptable at record time.
     const detectedHz = detectHz(pcm, audioBuf.sampleRate);
@@ -972,9 +991,15 @@ async function deriveSample(parentMeta) {
 async function evolveTick() {
   const params = state.genome.params;
   const cloudSampleUpdates = [];
+  // Young samples get immunity from decay and culling for a couple of
+  // minutes so a freshly recorded breath always gets a fair chance to
+  // be played, mutated, or derived from before evolution can touch it.
+  const now = Date.now();
+  const PROTECT_MS = 2 * 60_000;
   for (const meta of state.samples) {
-    meta.mutationLevel = Math.min(1, meta.mutationLevel + params.degradationRate * (0.5 + state.prng()));
-    if (state.prng() < 0.06) meta.survivalScore *= 0.88;
+    const young = (now - meta.recordedAt) < PROTECT_MS;
+    meta.mutationLevel = Math.min(1, meta.mutationLevel + params.degradationRate * (0.5 + state.prng()) * (young ? 0.25 : 1));
+    if (!young && state.prng() < 0.06) meta.survivalScore *= 0.88;
     try { await state.store.update(meta.id, { mutationLevel: meta.mutationLevel, survivalScore: meta.survivalScore }); } catch (e) {}
     // Only sync cloud updates for samples this genome actually owns.
     // Samples carried over from visited instruments (different genomeId)
@@ -989,8 +1014,11 @@ async function evolveTick() {
     const parent = fresh[Math.floor(state.prng() * fresh.length)];
     await deriveSample(parent);
   }
-  // cull samples that have withered below threshold
-  const dead = state.samples.filter((s) => s.survivalScore < 0.05);
+  // Cull samples that have withered below threshold, but never drop a
+  // sample while it's still inside its protection window — that's the
+  // safety net against a new recording disappearing before it's had a
+  // chance to be heard.
+  const dead = state.samples.filter((s) => s.survivalScore < 0.05 && (now - s.recordedAt) > PROTECT_MS);
   for (const s of dead) {
     try { await state.store.del(s.id); } catch (e) {}
     // Only delete from cloud if this genome owns the sample.  Visited
@@ -1000,7 +1028,7 @@ async function evolveTick() {
       deleteSample(s.id, s.storagePath).catch(() => {});
     }
   }
-  state.samples = state.samples.filter((s) => s.survivalScore >= 0.05);
+  state.samples = state.samples.filter((s) => s.survivalScore >= 0.05 || (now - s.recordedAt) <= PROTECT_MS);
   // Tightened ranges now that these params directly shape sound:
   drift('pitchDrift', 0.008, 0.01, 0.3);         // ~0 → 12 cents wobble max
   drift('chopProbability', 0.012, 0, 0.25);      // cap at 25% chop rate
@@ -1818,7 +1846,9 @@ async function autoRecord() {
   if (state.recording) return;
   if (state.samples.length >= 40) return;
   if (!micStream) return;
-  await recordBreath(2000 + state.prng() * 2000);
+  // Square-root weighting biases the distribution toward the longer end
+  // of the range so more breath ends up captured per take.
+  await recordBreath(2500 + Math.pow(state.prng(), 0.5) * 2500);
 }
 
 // Excite: persistently speed up + louden + make busier
@@ -2014,19 +2044,35 @@ function drawViz(dt) {
     c.quadraticCurveTo(ctrlX, ctrlY, p.dx, p.dy);
     c.stroke();
   }
+  // Age-fade between two #rrggbb colours. Used so dots drift toward a
+  // muted end state instead of snapping between bright and fossil.
+  const lerpHex = (from, to, t) => {
+    t = Math.max(0, Math.min(1, t));
+    const px = (h, o) => parseInt(h.slice(o, o + 2), 16);
+    const mix = (a, b) => Math.round(a + (b - a) * t);
+    const r = mix(px(from, 1), px(to, 1));
+    const g = mix(px(from, 3), px(to, 3));
+    const b = mix(px(from, 5), px(to, 5));
+    const hex = (n) => n.toString(16).padStart(2, '0');
+    return '#' + hex(r) + hex(g) + hex(b);
+  };
+  const FADE_SECONDS = 600; // ~10 minutes to fully faded
   for (const p of positions) {
     const s = p.s;
     const dx = p.dx, dy = p.dy;
     const age = (now - s.recordedAt) / 1000;
     const dotR = 3 + s.survivalScore * 3;
-    // Cloud-origin samples get a constant mint colour regardless of mood,
-    // so it's obvious at a glance which breaths came in over the network.
-    // Local mic recordings follow the mood colour (fading to a dull tan
-    // as they fossilise).
+    // Cloud-origin samples fade from mint into a cool mint-grey with age.
+    // Local mic recordings start on the mood colour and drift toward the
+    // fossil tan — whichever arrives first, pure age or mutation level.
+    const ageT = Math.min(1, age / FADE_SECONDS);
     let dotColor;
-    if (s.fromCloud) dotColor = '#8fe3b5';                           // mint
-    else if (s.mutationLevel > 0.5) dotColor = '#8a7f6c';            // fossil
-    else dotColor = col;                                              // mood
+    if (s.fromCloud) {
+      dotColor = lerpHex('#8fe3b5', '#8a9590', ageT);                // mint → grey
+    } else {
+      const fadeT = Math.max(ageT, s.mutationLevel);
+      dotColor = lerpHex(col, '#8a7f6c', fadeT);                     // mood → fossil
+    }
     c.fillStyle = dotColor + 'cc';
     c.beginPath();
     c.arc(dx, dy, dotR, 0, Math.PI * 2);
@@ -2038,8 +2084,12 @@ function drawViz(dt) {
       c.arc(dx, dy, dotR + (now - s.lastPlayedAt) * 0.08, 0, Math.PI * 2);
       c.stroke();
     }
-    if (age < 3) {
-      c.fillStyle = '#ffffff';
+    // Fresh indicator: solid white centre for the first 2 seconds, then
+    // fades out over ~13 more so a new breath stays easy to spot in the
+    // swarm for noticeably longer than before.
+    if (age < 15) {
+      const freshAlpha = age < 2 ? 1 : Math.max(0, 1 - (age - 2) / 13);
+      c.fillStyle = 'rgba(255,255,255,' + freshAlpha.toFixed(3) + ')';
       c.beginPath();
       c.arc(dx, dy, 1.5, 0, Math.PI * 2);
       c.fill();
@@ -2147,7 +2197,9 @@ function wireControls() {
     const btn = el('btn-record');
     btn.classList.add('recording');
     btn.textContent = '◉ recording…';
-    try { await recordBreath(3000); } catch (e) { console.error(e); }
+    // Biased random (sqrt weighting) so manual takes skew longer — 3.0s
+    // floor, ~5.5s ceiling, median around 4.8s.
+    try { await recordBreath(3000 + Math.pow(Math.random(), 0.5) * 2500); } catch (e) { console.error(e); }
     btn.classList.remove('recording');
     btn.textContent = '◉ record breath';
   });
@@ -2347,8 +2399,10 @@ async function syncCloudSamples() {
       if (!audioBuf) continue;
       const pcm = audioBuf.getChannelData(0).slice();
       // Cloud samples uploaded by older builds aren't peak-normalised.
-      // Apply the same 0.8 ceiling so remote + local samples behave alike.
+      // Apply the same 0.65 ceiling + quiet-floor pass so remote and
+      // local samples behave alike when they mix with the music.
       normalizePcmInPlace(pcm, 0.65);
+      raiseQuietPcmInPlace(pcm, 0.35, 3);
       // Use the pitch the sample row already carries; otherwise run YIN now
       // and push the result back so no one else has to redo the work.
       let detectedHz = rs.detected_hz != null ? Number(rs.detected_hz) : null;

@@ -2026,20 +2026,22 @@ function updateReadouts() {
   el('r-samples').textContent = state.samples.length;
   el('r-wakes').textContent = g.activationCount;
   el('r-age').textContent = fmtTime(Date.now() - g.birthday);
-  // Cloud activity readout — visible proof that sync is working.
-  const rCloud = el('r-cloud');
-  if (rCloud) {
+  // Cloud activity readouts — split OUT (pushes) and IN (pulls).
+  const rOut = el('r-cloud-out');
+  const rIn  = el('r-cloud-in');
+  if (rOut && rIn) {
     if (!cloudReady) {
-      rCloud.textContent = 'offline';
+      rOut.textContent = 'offline';
+      rIn.textContent  = 'offline';
     } else {
       const c = state.cloud;
-      const bits = [
-        (c.pushOK ? c.pushOK + '↑' : ''),
-        (c.pullOK ? c.pullOK + '↓' : ''),
-        ((c.pushFail || c.pullFail) ? '✕' + (c.pushFail + c.pullFail) : ''),
-      ].filter(Boolean);
-      rCloud.textContent = bits.length ? bits.join(' ') : 'ready';
-      if (c.lastError) rCloud.title = 'last error: ' + c.lastError;
+      rOut.textContent = (c.pushOK || 0) + (c.pushFail ? ' ✕' + c.pushFail : '');
+      rIn.textContent  = (c.pullOK || 0) + (c.pullFail ? ' ✕' + c.pullFail : '');
+      if (c.lastError) {
+        const msg = 'last error: ' + c.lastError;
+        rOut.title = msg;
+        rIn.title  = msg;
+      }
     }
   }
   const now = Date.now();
@@ -2236,6 +2238,23 @@ async function upgradeSamplesWithPitch() {
   }
 }
 
+// Background cloud pull, re-running at a random 1.5–4.5 min cadence.
+// Each tick refreshes the genome (in case another device evolved it) and
+// adds any new samples that have appeared since the last pull.  Never
+// blocks the audio loop — all the awaited calls are fire-and-forget from
+// here.
+function schedulePeriodicCloudPull() {
+  if (!cloudReady) return;
+  const nextMs = 90_000 + Math.random() * 180_000;
+  setTimeout(async () => {
+    if (state.started && state.ctx) {
+      try { await syncCloudGenome(); } catch (e) { /* counter bumped internally */ }
+      try { await syncCloudSamples(); } catch (e) { /* same */ }
+    }
+    schedulePeriodicCloudPull();
+  }, nextMs);
+}
+
 async function syncCloudSamples() {
   if (!cloudReady || !state.ctx) return;
   const remote = await pullSamples(state.genome.id, { includeShared: state.includeSharedPool }).catch(() => []);
@@ -2326,6 +2345,12 @@ async function boot() {
       syncCloudSamples()
         .then(() => upgradeSamplesWithPitch())
         .catch(e => console.warn('sample sync error', e));
+      // Keep listening: every 1.5–4.5 minutes, re-pull from the cloud.
+      // Picks up new samples recorded from other devices on your own
+      // genome, and (if includeSharedPool is on) new public breaths
+      // that anyone has uploaded since.  Mint dots will appear in the
+      // viz when they arrive.
+      schedulePeriodicCloudPull();
       status.textContent = state.samples.length
         ? 'playing — move mouse to modulate · ✦ excite · ~ chill'
         : 'record a breath (◉) to give it material — melody awaits samples';

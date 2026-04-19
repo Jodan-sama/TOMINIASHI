@@ -730,11 +730,13 @@ async function recordBreath(durMs = 3000) {
         } else {
           state.cloud.pushFail++;
           state.cloud.lastError = 'push mic returned null';
+          state.cloud.lastErrorAt = Date.now();
           console.warn('[cloud] mic push returned null path');
         }
       }).catch(e => {
         state.cloud.pushFail++;
         state.cloud.lastError = String(e && e.message || e);
+        state.cloud.lastErrorAt = Date.now();
         console.warn('[cloud] mic upload failed', e);
       });
     }
@@ -957,10 +959,12 @@ async function deriveSample(parentMeta) {
       } else {
         state.cloud.pushFail++;
         state.cloud.lastError = 'push derived returned null';
+        state.cloud.lastErrorAt = Date.now();
       }
     }).catch(e => {
       state.cloud.pushFail++;
       state.cloud.lastError = String(e && e.message || e);
+      state.cloud.lastErrorAt = Date.now();
       console.warn('[cloud] derived upload failed', e);
     });
   }
@@ -2067,7 +2071,11 @@ function updateReadouts() {
       }
       rOut.textContent = String(owned) + (c.pushFail ? ' ✕' + c.pushFail : '');
       rIn.textContent  = String(pulled) + (c.pullFail ? ' ✕' + c.pullFail : '');
-      if ((c.pushFail || c.pullFail) && c.lastError) {
+      // Show the CLOUD ERR row only while the error is recent.  After
+      // 60 s of no new failures we assume the issue is understood or
+      // resolved and hide the row again (counters stay visible).
+      const errFresh = c.lastError && c.lastErrorAt && (Date.now() - c.lastErrorAt < 60_000);
+      if (errFresh) {
         if (rErrRow) rErrRow.classList.remove('hidden');
         if (rErr) {
           const t = c.lastError.length > 36 ? c.lastError.slice(0, 33) + '…' : c.lastError;
@@ -2338,6 +2346,7 @@ async function syncCloudSamples() {
     } catch (e) {
       state.cloud.pullFail++;
       state.cloud.lastError = String(e && e.message || e);
+      state.cloud.lastErrorAt = Date.now();
       console.warn('[cloud] sample sync failed for', rs.id, e);
     }
   }

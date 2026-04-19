@@ -942,7 +942,11 @@ async function deriveSample(parentMeta) {
       mutation_level: rec.mutationLevel,
       source: 'derived',
       survival_score: rec.survivalScore,
-      parent_id: parentMeta.id,
+      // Only reference the parent in the cloud row if it actually lives
+      // in the cloud — otherwise the foreign-key constraint rejects the
+      // insert.  Local-only parents (not yet uploaded or visited-instrument
+      // carryovers) become orphan-in-cloud derived samples, which is fine.
+      parent_id: parentMeta.storagePath ? parentMeta.id : null,
       shared: rec.shared,
       detected_hz: detectedHz,
     }).then(path => {

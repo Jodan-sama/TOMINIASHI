@@ -2043,7 +2043,9 @@ function updateReadouts() {
   el('r-samples').textContent = state.samples.length;
   el('r-wakes').textContent = g.activationCount;
   el('r-age').textContent = fmtTime(Date.now() - g.birthday);
-  // Cloud activity readouts — split OUT (pushes) and IN (pulls).
+  // Cloud activity readouts.  Show CURRENT pool counts so the numbers
+  // match what's visually in orbit (mint dots etc.), plus an event
+  // counter of failures this session so we don't lose debug info.
   const rOut = el('r-cloud-out');
   const rIn  = el('r-cloud-in');
   const rErrRow = el('r-cloud-err-row');
@@ -2055,10 +2057,14 @@ function updateReadouts() {
       if (rErrRow) rErrRow.classList.add('hidden');
     } else {
       const c = state.cloud;
-      rOut.textContent = (c.pushOK || 0) + (c.pushFail ? ' ✕' + c.pushFail : '');
-      rIn.textContent  = (c.pullOK || 0) + (c.pullFail ? ' ✕' + c.pullFail : '');
-      // When there are failures, surface the last error message as a
-      // separate visible row so the user doesn't have to open devtools.
+      // OUT = samples of mine that are cloud-backed right now
+      let owned = 0, pulled = 0;
+      for (const s of state.samples) {
+        if (s.storagePath && s.genomeId === state.genome.id) owned++;
+        if (s.fromCloud) pulled++;
+      }
+      rOut.textContent = String(owned) + (c.pushFail ? ' ✕' + c.pushFail : '');
+      rIn.textContent  = String(pulled) + (c.pullFail ? ' ✕' + c.pullFail : '');
       if ((c.pushFail || c.pullFail) && c.lastError) {
         if (rErrRow) rErrRow.classList.remove('hidden');
         if (rErr) {

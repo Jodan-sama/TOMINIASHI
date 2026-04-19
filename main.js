@@ -835,12 +835,10 @@ function triggerGrain(rec, opts) {
     env.connect(bq);
     tail = bq;
   }
-  // Bitcrush — slightly more prominent than before but still tasteful.
-  // Threshold dropped to 0.75 (was 0.8), probability to 30% (was 20%),
-  // bit floor to 5 (was 6) so very old samples can get genuinely
-  // chewed-sounding.  Dry/wet mix balanced at 50/50 so the crushed
-  // signal is clearly audible without overpowering.
-  if (mutation > 0.75 && Math.random() < 0.3) {
+  // Bitcrush — dialled back just a touch.  Still kicks in on fossilised
+  // samples but less often and mixed slightly drier so it's texture, not
+  // a dominant effect.
+  if (mutation > 0.75 && Math.random() < 0.23) {
     const ws = ctx.createWaveShaper();
     const bits = Math.max(5, Math.floor(10 - mutation * 5));
     const steps = Math.pow(2, bits);
@@ -850,8 +848,8 @@ function triggerGrain(rec, opts) {
       curve[i] = Math.round(x * steps) / steps;
     }
     ws.curve = curve;
-    const wet = ctx.createGain(); wet.gain.value = 0.5;
-    const dry = ctx.createGain(); dry.gain.value = 0.5;
+    const wet = ctx.createGain(); wet.gain.value = 0.4;
+    const dry = ctx.createGain(); dry.gain.value = 0.6;
     const merge = ctx.createGain();
     tail.connect(ws); ws.connect(wet); wet.connect(merge);
     tail.connect(dry); dry.connect(merge);

@@ -1974,7 +1974,7 @@ function drawViz(dt) {
     c.stroke();
   }
   // samples as orbiting dots — two passes: first compute all positions,
-  // then draw parent→child lineage lines underneath, then draw the dots.
+  // then draw parent→child lineage arcs underneath, then draw the dots.
   const now = Date.now();
   const positions = [];
   const posById = new Map();
@@ -1985,23 +1985,33 @@ function drawViz(dt) {
     const a = viz.phase * speed + i * 0.7;
     const dx = cx + Math.cos(a) * orbit;
     const dy = cy + Math.sin(a) * orbit * 0.55;
-    const p = { s, dx, dy, i };
+    const p = { s, dx, dy, a, orbit, i };
     positions.push(p);
     posById.set(s.id, p);
   }
-  // Faint parent→child lineage lines. Drawn before the dots so they sit
-  // underneath.  Alpha tapers with the child's survival score so fading
-  // branches look ghostly.
+  // Faint parent→child lineage arcs that curve around the center so the
+  // inner circle isn't crossed by straight lines. Each arc uses a
+  // quadratic Bezier with a control point placed at the midway angle
+  // (shortest arc between parent and child) pushed just outside the
+  // farther of the two orbits. This makes the line bulge outward like
+  // an orbital arc rather than cutting across the disc.
   c.lineWidth = 0.6;
   for (const p of positions) {
     if (!p.s.parentId) continue;
     const parent = posById.get(p.s.parentId);
     if (!parent) continue;
+    let diff = p.a - parent.a;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    const midA = parent.a + diff / 2;
+    const ctrlR = Math.max(parent.orbit, p.orbit) + 22;
+    const ctrlX = cx + Math.cos(midA) * ctrlR;
+    const ctrlY = cy + Math.sin(midA) * ctrlR * 0.55;
     const alpha = Math.max(0.04, Math.min(0.18, p.s.survivalScore * 0.18));
     c.strokeStyle = 'rgba(236, 228, 212, ' + alpha.toFixed(3) + ')';
     c.beginPath();
     c.moveTo(parent.dx, parent.dy);
-    c.lineTo(p.dx, p.dy);
+    c.quadraticCurveTo(ctrlX, ctrlY, p.dx, p.dy);
     c.stroke();
   }
   for (const p of positions) {

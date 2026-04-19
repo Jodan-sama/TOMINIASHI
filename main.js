@@ -97,11 +97,10 @@ function newGenome() {
   return {
     id, seed, birthday: Date.now(),
     params: {
-      grainMinMs: 40 + r() * 80,
-      grainMaxMs: 150 + r() * 350,
-      pitchDrift: 0.02 + r() * 0.25,
-      chopProbability: 0.3 + r() * 0.5,
-      wakeMeanSeconds: 20 + r() * 90,
+      grainMinMs: 50 + r() * 70,            // 50-120 ms at birth
+      grainMaxMs: 240 + r() * 260,          // 240-500 ms at birth
+      pitchDrift: 0.02 + r() * 0.12,        // 0.02-0.14 → max ~6 cents wobble at birth
+      chopProbability: 0.02 + r() * 0.08,   // 0.02-0.10 → subtle chop at birth
       reverbAmount: 0.15 + r() * 0.45,
       degradationRate: 0.006 + r() * 0.025,
       melodicBias: r(),
@@ -836,14 +835,14 @@ function triggerGrain(rec, opts) {
     env.connect(bq);
     tail = bq;
   }
-  // Bitcrush — now quite gentle.  Only very old samples (mutation > 0.8)
-  // and only ~20% of those, and never below 6 bits (64 steps) so the grit
-  // is mostly a soft texture rather than an interruption.  Wet-only output
-  // is blended against the dry tail via a 55/45 wet-dry mix so even when
-  // it fires, the original signal is mostly intact.
-  if (mutation > 0.8 && Math.random() < 0.2) {
+  // Bitcrush — slightly more prominent than before but still tasteful.
+  // Threshold dropped to 0.75 (was 0.8), probability to 30% (was 20%),
+  // bit floor to 5 (was 6) so very old samples can get genuinely
+  // chewed-sounding.  Dry/wet mix balanced at 50/50 so the crushed
+  // signal is clearly audible without overpowering.
+  if (mutation > 0.75 && Math.random() < 0.3) {
     const ws = ctx.createWaveShaper();
-    const bits = Math.max(6, Math.floor(11 - mutation * 5));
+    const bits = Math.max(5, Math.floor(10 - mutation * 5));
     const steps = Math.pow(2, bits);
     const curve = new Float32Array(1024);
     for (let i = 0; i < 1024; i++) {
@@ -851,8 +850,8 @@ function triggerGrain(rec, opts) {
       curve[i] = Math.round(x * steps) / steps;
     }
     ws.curve = curve;
-    const wet = ctx.createGain(); wet.gain.value = 0.45;
-    const dry = ctx.createGain(); dry.gain.value = 0.55;
+    const wet = ctx.createGain(); wet.gain.value = 0.5;
+    const dry = ctx.createGain(); dry.gain.value = 0.5;
     const merge = ctx.createGain();
     tail.connect(ws); ws.connect(wet); wet.connect(merge);
     tail.connect(dry); dry.connect(merge);
@@ -996,14 +995,16 @@ async function evolveTick() {
     }
   }
   state.samples = state.samples.filter((s) => s.survivalScore >= 0.05);
-  drift('pitchDrift', 0.01, 0, 1);
-  drift('chopProbability', 0.03, 0.1, 0.95);
-  drift('wakeMeanSeconds', 5, 10, 180);
+  // Tightened ranges now that these params directly shape sound:
+  drift('pitchDrift', 0.008, 0.01, 0.3);         // ~0 → 12 cents wobble max
+  drift('chopProbability', 0.012, 0, 0.25);      // cap at 25% chop rate
   drift('reverbAmount', 0.02, 0, 0.8);
   drift('degradationRate', 0.001, 0.002, 0.05);
   drift('melodicBias', 0.02, 0, 1);
-  drift('grainMinMs', 3, 20, 160);
-  drift('grainMaxMs', 8, 120, 800);
+  drift('grainMinMs', 3, 30, 180);                // tight for a noticeable but not huge scale
+  drift('grainMaxMs', 6, 180, 620);
+  // wakeMeanSeconds is retired.  Kept in the params object for legacy
+  // genomes but no longer drifted or read anywhere.
   if (state.revSend) state.revSend.gain.value = state.genome.params.reverbAmount;
   state.genome.generation++;
   state.lastEvolveAt = Date.now();
@@ -1374,26 +1375,42 @@ function playNote(full, meta, when, opts = {}) {
     extraDetune = 0,
     panOverride = null,
     octaveBias = 0,       // shift up/down octaves (e.g. ambient uses -1 or -2)
+    noChop = false,       // force no chop even if genome says so (used for held notes)
   } = opts;
+  const p = state.genome.params;
   // Mouse X nudges the transposition but stays small enough that the key
   // remains obvious.
   const transposedDegree = degree + Math.round((state.mouse.x - 0.5) * 6);
-  const dur = durationMs != null ? durationMs : 500 + state.prng() * 500;
+  // Grain-scale knob from the genome — tightens or opens out every
+  // duration.  Clamped to [0.75, 1.25] so it's noticeable but never
+  // turns grains into unrecognisable blips or endless drones.
+  const avgGrainMs = (p.grainMinMs + p.grainMaxMs) / 2;
+  const grainScale = Math.max(0.75, Math.min(1.25, avgGrainMs / 275));
+  // ChopProbability occasionally replaces the grain with a very short
+  // (30-80 ms) chopped variant for a stutter feel.  Stored param range
+  // is tight (≤0.25) so this is an accent, not a constant interruption.
+  const chopRoll = state.prng();
+  const chopped = !noChop && layer !== 'ambient' && chopRoll < (p.chopProbability || 0);
+  const dur = chopped
+    ? 30 + state.prng() * 50
+    : (durationMs != null ? durationMs : 500 + state.prng() * 500) * grainScale;
   const clampedDur = Math.min(dur, Math.max(60, meta.durationMs - 20));
   const maxOffset = Math.max(0, meta.durationMs - clampedDur);
   // Prefer the meaty middle of the sample for vocal clarity
   const offsetMs = Math.min(maxOffset, Math.max(0, meta.durationMs * 0.1 + state.prng() * maxOffset * 0.7));
-  // Use the sample's detected fundamental if we've analysed it; fall back to
-  // naive degree-to-rate mapping otherwise.
   const rate = rateForDegreeOnSample(transposedDegree, meta.detectedHz || full.detectedHz, octaveBias);
   const pan = panOverride != null ? panOverride : (Math.sin(state.melodyStep * 0.6) * 0.45 + (state.prng() * 2 - 1) * 0.2);
+  // PitchDrift: per-grain detune up to ~12 cents at the max genome value.
+  // Stays subtle but gives each genome a distinct "unstable throat" feel.
+  const wobbleCents = (p.pitchDrift || 0) * 40;
+  const jitter = (state.prng() * 2 - 1) * wobbleCents;
   triggerGrain(full, {
     offsetMs, durationMs: clampedDur,
     rate: Math.max(0.25, Math.min(4, rate)),
     pan, gain: vel,
     mutation: meta.mutationLevel,
     layer, filterHz,
-    detuneCents: (state.prng() * 2 - 1) * 5 + extraDetune,
+    detuneCents: jitter + extraDetune,
     when,
   });
   meta.lastPlayedAt = Date.now();
@@ -2029,18 +2046,28 @@ function updateReadouts() {
   // Cloud activity readouts — split OUT (pushes) and IN (pulls).
   const rOut = el('r-cloud-out');
   const rIn  = el('r-cloud-in');
+  const rErrRow = el('r-cloud-err-row');
+  const rErr = el('r-cloud-err');
   if (rOut && rIn) {
     if (!cloudReady) {
       rOut.textContent = 'offline';
       rIn.textContent  = 'offline';
+      if (rErrRow) rErrRow.classList.add('hidden');
     } else {
       const c = state.cloud;
       rOut.textContent = (c.pushOK || 0) + (c.pushFail ? ' ✕' + c.pushFail : '');
       rIn.textContent  = (c.pullOK || 0) + (c.pullFail ? ' ✕' + c.pullFail : '');
-      if (c.lastError) {
-        const msg = 'last error: ' + c.lastError;
-        rOut.title = msg;
-        rIn.title  = msg;
+      // When there are failures, surface the last error message as a
+      // separate visible row so the user doesn't have to open devtools.
+      if ((c.pushFail || c.pullFail) && c.lastError) {
+        if (rErrRow) rErrRow.classList.remove('hidden');
+        if (rErr) {
+          const t = c.lastError.length > 36 ? c.lastError.slice(0, 33) + '…' : c.lastError;
+          rErr.textContent = t;
+          rErr.title = c.lastError;
+        }
+      } else if (rErrRow) {
+        rErrRow.classList.add('hidden');
       }
     }
   }
@@ -2059,8 +2086,7 @@ function updateReadouts() {
   const p = g.params;
   el('p-grain').textContent = p.grainMinMs.toFixed(0) + '–' + p.grainMaxMs.toFixed(0);
   el('p-pitch').textContent = p.pitchDrift.toFixed(3);
-  el('p-chop').textContent = p.chopProbability.toFixed(2);
-  el('p-wake').textContent = p.wakeMeanSeconds.toFixed(0) + 's';
+  el('p-chop').textContent = p.chopProbability.toFixed(3);
   el('p-rev').textContent = p.reverbAmount.toFixed(2);
   el('p-dec').textContent = p.degradationRate.toFixed(4);
   el('p-mel').textContent = p.melodicBias.toFixed(2);

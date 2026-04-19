@@ -21,6 +21,12 @@ export const cloudReady = !!client;
 
 function log(...a) { console.log('[cloud]', ...a); }
 
+function errText(e) {
+  if (!e) return 'unknown error';
+  if (e.message) return e.message;
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
+
 export async function pullGenome(id) {
   if (!cloud) return null;
   const { data, error } = await cloud
@@ -28,7 +34,7 @@ export async function pullGenome(id) {
     .select('*')
     .eq('id', id)
     .maybeSingle();
-  if (error) { log('pullGenome error', error); return null; }
+  if (error) { console.error('[cloud] pullGenome error', error); throw new Error('pullGenome: ' + errText(error)); }
   return data || null;
 }
 
@@ -43,13 +49,10 @@ export async function pushGenome(g) {
     activation_count: g.activationCount || 0,
   };
   const { error } = await cloud.from('tn_genomes').upsert(row, { onConflict: 'id' });
-  if (error) { log('pushGenome error', error); return false; }
+  if (error) { console.error('[cloud] pushGenome error', error); throw new Error('pushGenome: ' + errText(error)); }
   return true;
 }
 
-// Pulls all samples the current browser is entitled to hear:
-// - always: samples belonging to this genome
-// - optionally: samples from other genomes that were marked shared
 export async function pullSamples(genomeId, { includeShared = false } = {}) {
   if (!cloud) return [];
   let q = cloud.from('tn_samples').select('*');
@@ -59,21 +62,27 @@ export async function pullSamples(genomeId, { includeShared = false } = {}) {
     q = q.eq('genome_id', genomeId);
   }
   const { data, error } = await q;
-  if (error) { log('pullSamples error', error); return []; }
+  if (error) { console.error('[cloud] pullSamples error', error); throw new Error('pullSamples: ' + errText(error)); }
   return data || [];
 }
 
-// Upload a WebM blob produced by MediaRecorder, then insert the metadata row.
-// `meta` carries everything except storage_path and mime (which we set here).
+// Upload the blob + insert the metadata row. Throws on any Supabase error
+// with a human-readable message so the caller can surface it.
 export async function pushSample({ id, genome_id, blob, mime, ...meta }) {
   if (!cloud) return null;
   const baseMime = (mime || 'audio/webm').split(';')[0];
-  const ext = baseMime.includes('ogg') ? 'ogg' : baseMime.includes('mp4') ? 'm4a' : 'webm';
+  const ext = baseMime.includes('wav') ? 'wav'
+            : baseMime.includes('ogg') ? 'ogg'
+            : baseMime.includes('mp4') ? 'm4a'
+            : 'webm';
   const path = `${genome_id}/${id}.${ext}`;
   const up = await cloud.storage.from(BUCKET).upload(path, blob, {
     cacheControl: '3600', upsert: false, contentType: baseMime,
   });
-  if (up.error) { log('upload error', up.error); return null; }
+  if (up.error) {
+    console.error('[cloud] storage upload failed', { path, mime: baseMime, error: up.error });
+    throw new Error('storage: ' + errText(up.error));
+  }
   const row = {
     id, genome_id, storage_path: path, mime: baseMime,
     sample_rate: meta.sample_rate,
@@ -89,14 +98,19 @@ export async function pushSample({ id, genome_id, blob, mime, ...meta }) {
     detected_hz: meta.detected_hz != null ? meta.detected_hz : null,
   };
   const ins = await cloud.from('tn_samples').insert(row);
-  if (ins.error) { log('insert error', ins.error); return null; }
+  if (ins.error) {
+    console.error('[cloud] row insert failed', { id, error: ins.error });
+    // The object already exists in storage — clean it up so retries don't bounce.
+    cloud.storage.from(BUCKET).remove([path]).catch(() => {});
+    throw new Error('insert: ' + errText(ins.error));
+  }
   return path;
 }
 
 export async function updateSample(id, patch) {
   if (!cloud) return false;
   const { error } = await cloud.from('tn_samples').update(patch).eq('id', id);
-  if (error) { log('updateSample error', error); return false; }
+  if (error) { console.error('[cloud] updateSample error', error); throw new Error('update: ' + errText(error)); }
   return true;
 }
 
@@ -106,7 +120,7 @@ export async function deleteSample(id, storage_path) {
     await cloud.storage.from(BUCKET).remove([storage_path]).catch(() => {});
   }
   const { error } = await cloud.from('tn_samples').delete().eq('id', id);
-  if (error) { log('deleteSample error', error); return false; }
+  if (error) { console.error('[cloud] deleteSample error', error); throw new Error('delete: ' + errText(error)); }
   return true;
 }
 

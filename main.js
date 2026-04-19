@@ -1973,16 +1973,41 @@ function drawViz(dt) {
     c.closePath();
     c.stroke();
   }
-  // samples as orbiting dots
+  // samples as orbiting dots — two passes: first compute all positions,
+  // then draw parent→child lineage lines underneath, then draw the dots.
   const now = Date.now();
+  const positions = [];
+  const posById = new Map();
   for (let i = 0; i < state.samples.length; i++) {
     const s = state.samples[i];
-    const age = (now - s.recordedAt) / 1000;
     const orbit = baseR * 1.6 + (i % 5) * 18;
     const speed = 0.08 + (s.source === 'derived' ? 0.05 : 0.02);
     const a = viz.phase * speed + i * 0.7;
     const dx = cx + Math.cos(a) * orbit;
     const dy = cy + Math.sin(a) * orbit * 0.55;
+    const p = { s, dx, dy, i };
+    positions.push(p);
+    posById.set(s.id, p);
+  }
+  // Faint parent→child lineage lines. Drawn before the dots so they sit
+  // underneath.  Alpha tapers with the child's survival score so fading
+  // branches look ghostly.
+  c.lineWidth = 0.6;
+  for (const p of positions) {
+    if (!p.s.parentId) continue;
+    const parent = posById.get(p.s.parentId);
+    if (!parent) continue;
+    const alpha = Math.max(0.04, Math.min(0.18, p.s.survivalScore * 0.18));
+    c.strokeStyle = 'rgba(236, 228, 212, ' + alpha.toFixed(3) + ')';
+    c.beginPath();
+    c.moveTo(parent.dx, parent.dy);
+    c.lineTo(p.dx, p.dy);
+    c.stroke();
+  }
+  for (const p of positions) {
+    const s = p.s;
+    const dx = p.dx, dy = p.dy;
+    const age = (now - s.recordedAt) / 1000;
     const dotR = 3 + s.survivalScore * 3;
     // Cloud-origin samples get a constant mint colour regardless of mood,
     // so it's obvious at a glance which breaths came in over the network.

@@ -2387,16 +2387,28 @@ function schedulePeriodicCloudPull() {
   }, nextMs);
 }
 
+// Storage paths that returned 404/"object not found" on this session.
+// Orphan rows in tn_samples — the DB row exists but the file is gone, so
+// retrying on every pull cycle is wasted bandwidth and log noise. Skip
+// them for the rest of the session; a reload clears the set and we'll
+// rediscover anything that's come back.
+const deadCloudPaths = new Set();
+
 async function syncCloudSamples() {
   if (!cloudReady || !state.ctx) return;
   const remote = await pullSamples(state.genome.id, { includeShared: state.includeSharedPool }).catch(() => []);
   const localIds = new Set(state.samples.map(s => s.id));
   let added = 0;
+  let skippedDead = 0;
   for (const rs of remote) {
     if (localIds.has(rs.id)) continue;
+    if (rs.storage_path && deadCloudPaths.has(rs.storage_path)) { skippedDead++; continue; }
     try {
       const blob = await fetchSampleBlob(rs.storage_path);
-      if (!blob) continue;
+      if (!blob) {
+        if (rs.storage_path) deadCloudPaths.add(rs.storage_path);
+        continue;
+      }
       const ab = await blob.arrayBuffer();
       const audioBuf = await state.ctx.decodeAudioData(ab).catch(() => null);
       if (!audioBuf) continue;
@@ -2446,8 +2458,10 @@ async function syncCloudSamples() {
   // Always log pull activity so it's easy to verify from DevTools that the
   // cloud round-trip is actually returning rows. "remote" is how many rows
   // Supabase sent back for this genome; "added" is how many were new and
-  // ingested locally.
+  // ingested locally; "skippedDead" is orphan rows we've learned not to
+  // retry; "dead" is the cumulative dead-path count for this session.
   console.log('[cloud] pull: remote=' + remote.length + ' added=' + added
+    + ' skippedDead=' + skippedDead + ' dead=' + deadCloudPaths.size
     + ' genome=' + state.genome.id.slice(0, 8)
     + ' includeShared=' + !!state.includeSharedPool);
 }

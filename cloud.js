@@ -132,9 +132,15 @@ export function publicUrlFor(path) {
 }
 
 // Fetch a sample's audio as ArrayBuffer so we can decodeAudioData it.
+// Returns null on any failure. "Object not found" responses are quiet
+// since the caller tracks orphan paths and stops retrying them — logging
+// every miss drowns out real errors when the DB has stale rows.
 export async function fetchSampleBlob(path) {
   if (!cloud) return null;
   const { data, error } = await cloud.storage.from(BUCKET).download(path);
-  if (error) { log('download error', error); return null; }
+  if (error) {
+    if (!/not found/i.test(error.message || '')) log('download error', error);
+    return null;
+  }
   return data; // Blob
 }

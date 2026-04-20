@@ -689,7 +689,10 @@ async function recordBreath(durMs = 3000) {
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     const done = new Promise((r) => (rec.onstop = r));
-    rec.start();
+    // Timeslice forces ondataavailable to fire every 500ms rather than only
+    // on stop(). Stops us from silently losing the tail chunk if the browser
+    // fires onstop before flushing the final buffer.
+    rec.start(500);
     await new Promise((r) => setTimeout(r, durMs));
     rec.stop();
     await done;
@@ -704,6 +707,13 @@ async function recordBreath(durMs = 3000) {
     // extremely soft breaths aren't lost once they mix with the music.
     normalizePcmInPlace(pcm, 0.65);
     raiseQuietPcmInPlace(pcm, 0.35, 3);
+    // Bail on empty/truncated recordings rather than shipping a broken
+    // file up to storage. 200 ms is the floor for anything useful.
+    const durationMs = (pcm.length / audioBuf.sampleRate) * 1000;
+    if (durationMs < 200) {
+      console.warn('[record] discarded breath: only', durationMs.toFixed(0), 'ms captured');
+      return null;
+    }
     // Run YIN pitch detection so we can pitch-correct playback. Synchronous
     // but fast (~20-40ms for 2048 samples); acceptable at record time.
     const detectedHz = detectHz(pcm, audioBuf.sampleRate);
@@ -724,12 +734,17 @@ async function recordBreath(durMs = 3000) {
     meta.shared = record.shared;
     meta.storagePath = null;
     state.samples.push(meta);
-    // Fire-and-forget cloud upload. Keeps local playback snappy; sync is best-effort.
+    // Fire-and-forget cloud upload. Encode the normalized PCM as a WAV so
+    // the stored file carries an explicit duration in its header (webm from
+    // MediaRecorder often ships with a missing/invalid Duration, which is
+    // why Supabase's preview shows 0:00 for those) and so the cloud audio
+    // matches exactly what's in the local pool post-normalization.
     if (cloudReady) {
+      const wavBlob = pcmToWavBlob(pcm, audioBuf.sampleRate);
       pushSample({
         id: record.id,
         genome_id: state.genome.id,
-        blob, mime: blob.type,
+        blob: wavBlob, mime: 'audio/wav',
         sample_rate: record.sampleRate,
         duration_ms: meta.durationMs,
         recorded_at: record.recordedAt,

@@ -700,7 +700,27 @@ async function recordBreath(durMs = 3000) {
     const blob = new Blob(chunks, { type: chunks[0].type || 'audio/webm' });
     const ab = await blob.arrayBuffer();
     const audioBuf = await state.ctx.decodeAudioData(ab);
-    const pcm = audioBuf.getChannelData(0).slice();
+    // Downsample to 22.05 kHz before we do anything else. Breaths carry
+    // essentially no useful energy above ~8 kHz, so halving the rate
+    // halves both the IDB footprint and every WAV we push to the cloud
+    // without a noticeable quality hit. OfflineAudioContext uses the
+    // browser's own high-quality resampler, so we skip writing one.
+    const TARGET_SR = 22050;
+    let pcm, sampleRate;
+    if (audioBuf.sampleRate > TARGET_SR) {
+      const outLen = Math.max(1, Math.ceil(audioBuf.length * TARGET_SR / audioBuf.sampleRate));
+      const off = new OfflineAudioContext(1, outLen, TARGET_SR);
+      const src = off.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(off.destination);
+      src.start();
+      const rendered = await off.startRendering();
+      pcm = rendered.getChannelData(0).slice();
+      sampleRate = TARGET_SR;
+    } else {
+      pcm = audioBuf.getChannelData(0).slice();
+      sampleRate = audioBuf.sampleRate;
+    }
     // Peak-normalize loud recordings so a shouted breath doesn't dominate
     // quiet ones.  Only scales DOWN (factor < 1). Then raiseQuiet brings
     // whispered takes up toward an audible floor with a capped boost, so
@@ -709,17 +729,17 @@ async function recordBreath(durMs = 3000) {
     raiseQuietPcmInPlace(pcm, 0.35, 3);
     // Bail on empty/truncated recordings rather than shipping a broken
     // file up to storage. 200 ms is the floor for anything useful.
-    const durationMs = (pcm.length / audioBuf.sampleRate) * 1000;
+    const durationMs = (pcm.length / sampleRate) * 1000;
     if (durationMs < 200) {
       console.warn('[record] discarded breath: only', durationMs.toFixed(0), 'ms captured');
       return null;
     }
     // Run YIN pitch detection so we can pitch-correct playback. Synchronous
     // but fast (~20-40ms for 2048 samples); acceptable at record time.
-    const detectedHz = detectHz(pcm, audioBuf.sampleRate);
+    const detectedHz = detectHz(pcm, sampleRate);
     const record = {
       id: crypto.randomUUID(),
-      pcm, sampleRate: audioBuf.sampleRate,
+      pcm, sampleRate,
       recordedAt: Date.now(), lastPlayedAt: 0,
       generation: state.genome.generation,
       mutationLevel: 0, source: 'mic', survivalScore: 1,
@@ -740,12 +760,12 @@ async function recordBreath(durMs = 3000) {
     // why Supabase's preview shows 0:00 for those) and so the cloud audio
     // matches exactly what's in the local pool post-normalization.
     if (cloudReady) {
-      const wavBlob = pcmToWavBlob(pcm, audioBuf.sampleRate);
+      const wavBlob = pcmToWavBlob(pcm, sampleRate);
       pushSample({
         id: record.id,
         genome_id: state.genome.id,
         blob: wavBlob, mime: 'audio/wav',
-        sample_rate: record.sampleRate,
+        sample_rate: sampleRate,
         duration_ms: meta.durationMs,
         recorded_at: record.recordedAt,
         generation: record.generation,

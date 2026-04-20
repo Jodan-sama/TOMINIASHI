@@ -1427,7 +1427,10 @@ function playNote(full, meta, when, opts = {}) {
   const chopped = !noChop && layer !== 'ambient' && chopRoll < (p.chopProbability || 0);
   const dur = chopped
     ? 30 + state.prng() * 50
-    : (durationMs != null ? durationMs : 500 + state.prng() * 500) * grainScale;
+    // Default grain window is biased long (sqrt weighting) so a bigger
+    // slice of each recording surfaces per hit. Range ~800-2600ms before
+    // grainScale, which is a substantial bump from the old 500-1000ms.
+    : (durationMs != null ? durationMs : 800 + Math.pow(state.prng(), 0.5) * 1800) * grainScale;
   const clampedDur = Math.min(dur, Math.max(60, meta.durationMs - 20));
   const maxOffset = Math.max(0, meta.durationMs - clampedDur);
   // Prefer the meaty middle of the sample for vocal clarity
@@ -2440,7 +2443,13 @@ async function syncCloudSamples() {
     }
   }
   state.cloud.pullOK += added;
-  if (added) console.log('[cloud] pulled', added, 'samples');
+  // Always log pull activity so it's easy to verify from DevTools that the
+  // cloud round-trip is actually returning rows. "remote" is how many rows
+  // Supabase sent back for this genome; "added" is how many were new and
+  // ingested locally.
+  console.log('[cloud] pull: remote=' + remote.length + ' added=' + added
+    + ' genome=' + state.genome.id.slice(0, 8)
+    + ' includeShared=' + !!state.includeSharedPool);
 }
 
 async function boot() {

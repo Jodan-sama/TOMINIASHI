@@ -56,6 +56,15 @@ const state = {
   // Cloud activity counters so we can see at a glance whether sync is
   // working.  Bumped by pushSample / pullSamples call-sites.
   cloud: { pushOK: 0, pushFail: 0, pullOK: 0, pullFail: 0, lastError: null },
+  // Runtime grain-playback telemetry. Populated from playNote so we can
+  // answer "are samples actually playing?" and "how long do they play?"
+  // from DevTools via window.tnStats().
+  stats: {
+    grainPlays: 0, grainMs: 0, choppedPlays: 0,
+    cloudGrainPlays: 0, localGrainPlays: 0,
+    minGrainMs: Infinity, maxGrainMs: 0,
+    uniqueSamplesPlayed: new Set(),
+  },
   // Three continuous arpeggiator voices. Each has its own pattern, step
   // subdivision, octave offset, gate fraction, and assigned sample.
   // Polyrhythm emerges from mismatched pattern lengths (e.g. 4-vs-6-vs-3).
@@ -1486,6 +1495,16 @@ function playNote(full, meta, when, opts = {}) {
     when,
   });
   meta.lastPlayedAt = Date.now();
+  // Grain-playback telemetry. Cheap counters that let tnStats() answer
+  // "are samples actually playing?" and "what's the average duration?"
+  const st = state.stats;
+  st.grainPlays++;
+  st.grainMs += clampedDur;
+  if (chopped) st.choppedPlays++;
+  if (meta.fromCloud) st.cloudGrainPlays++; else st.localGrainPlays++;
+  if (clampedDur < st.minGrainMs) st.minGrainMs = clampedDur;
+  if (clampedDur > st.maxGrainMs) st.maxGrainMs = clampedDur;
+  st.uniqueSamplesPlayed.add(meta.id);
 }
 
 // Arpeggio pattern library — pop-pleasing shapes expressed as scale degrees.
@@ -2517,6 +2536,29 @@ async function boot() {
   initInput();
   wireControls();
   requestAnimationFrame((t) => { lastFrame = t; loop(t); });
+  // Debug hook: call tnStats() in DevTools to see live playback stats —
+  // how many grains fired, average grain duration, cloud-vs-local
+  // breakdown, and how many unique samples have actually been heard.
+  window.tnStats = () => {
+    const s = state.stats;
+    const avg = s.grainPlays ? Math.round(s.grainMs / s.grainPlays) : 0;
+    const cloudInPool = state.samples.filter(x => x.fromCloud).length;
+    const localInPool = state.samples.length - cloudInPool;
+    const summary = {
+      grainPlays: s.grainPlays,
+      avgGrainMs: avg,
+      minGrainMs: s.minGrainMs === Infinity ? 0 : s.minGrainMs,
+      maxGrainMs: Math.round(s.maxGrainMs),
+      choppedPlays: s.choppedPlays,
+      cloudGrainPlays: s.cloudGrainPlays,
+      localGrainPlays: s.localGrainPlays,
+      uniqueSamplesPlayed: s.uniqueSamplesPlayed.size,
+      samplesInPool: state.samples.length,
+      cloudInPool, localInPool,
+    };
+    console.table(summary);
+    return summary;
+  };
   // Cloud genome sync happens before audio start; sample sync happens after
   // initAudio (decodeAudioData needs a context).
   await syncCloudGenome();

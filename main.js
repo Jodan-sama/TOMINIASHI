@@ -16,6 +16,12 @@ const LS_GENOME_HOME = 'tn_genome_home_v1'; // set on first boot; NEVER overwrit
 const LS_SHARE_BREATHS = 'tn_share_breaths';
 const LS_INCLUDE_SHARED = 'tn_include_shared';
 
+// Soft capacity targets. autoRecord refuses to capture past MAX_TOTAL_SAMPLES
+// and the cloud pull + evolve tick prune cloud-origin samples down to half
+// of that so the pool can't be drowned by incoming public breaths.
+const MAX_TOTAL_SAMPLES = 40;
+const MAX_CLOUD_SAMPLES = Math.floor(MAX_TOTAL_SAMPLES / 2);
+
 const state = {
   ctx: null, master: null, revSend: null, delSend: null, analyser: null, analyserData: null,
   perfFilter: null, perfGain: null, ambGain: null, eventGain: null, drumBus: null, padBus: null,
@@ -1073,6 +1079,22 @@ async function evolveTick() {
     }
   }
   state.samples = state.samples.filter((s) => s.survivalScore >= 0.05 || (now - s.recordedAt) <= PROTECT_MS);
+  // Cloud-pool cap: never let samples pulled in from other instruments
+  // dominate our own recordings. Oldest-first eviction keeps the most
+  // recently uploaded public breaths and drops the ancient ones. Local
+  // mic + derived samples are untouched here.
+  const cloudMembers = state.samples.filter((s) => s.fromCloud);
+  if (cloudMembers.length > MAX_CLOUD_SAMPLES) {
+    cloudMembers.sort((a, b) => a.recordedAt - b.recordedAt);
+    const excess = cloudMembers.slice(0, cloudMembers.length - MAX_CLOUD_SAMPLES);
+    const excessIds = new Set(excess.map((s) => s.id));
+    for (const s of excess) {
+      try { await state.store.del(s.id); } catch (e) {}
+      // We never own cloud-pulled samples, so we never touch the cloud
+      // row — they stay live for other instruments to pull.
+    }
+    state.samples = state.samples.filter((s) => !excessIds.has(s.id));
+  }
   // Tightened ranges now that these params directly shape sound:
   drift('pitchDrift', 0.008, 0.01, 0.3);         // ~0 → 12 cents wobble max
   drift('chopProbability', 0.012, 0, 0.25);      // cap at 25% chop rate
@@ -1901,7 +1923,7 @@ function scheduleStep(i, when) {
 
 async function autoRecord() {
   if (state.recording) return;
-  if (state.samples.length >= 40) return;
+  if (state.samples.length >= MAX_TOTAL_SAMPLES) return;
   if (!micStream) return;
   // Square-root weighting biases the distribution toward the longer end
   // of the range so more breath ends up captured per take.
@@ -2467,11 +2489,14 @@ async function syncCloudSamples() {
   if (!cloudReady || !state.ctx) return;
   const remote = await pullSamples(state.genome.id, { includeShared: state.includeSharedPool }).catch(() => []);
   const localIds = new Set(state.samples.map(s => s.id));
+  let cloudCount = state.samples.reduce((n, s) => n + (s.fromCloud ? 1 : 0), 0);
   let added = 0;
   let skippedDead = 0;
+  let skippedCap = 0;
   for (const rs of remote) {
     if (localIds.has(rs.id)) continue;
     if (rs.storage_path && deadCloudPaths.has(rs.storage_path)) { skippedDead++; continue; }
+    if (cloudCount >= MAX_CLOUD_SAMPLES) { skippedCap++; continue; }
     try {
       const blob = await fetchSampleBlob(rs.storage_path);
       if (!blob) {
@@ -2516,6 +2541,7 @@ async function syncCloudSamples() {
       const meta = sampleMeta(record);
       state.samples.push(meta);
       added++;
+      cloudCount++;
     } catch (e) {
       state.cloud.pullFail++;
       state.cloud.lastError = String(e && e.message || e);
@@ -2528,9 +2554,11 @@ async function syncCloudSamples() {
   // cloud round-trip is actually returning rows. "remote" is how many rows
   // Supabase sent back for this genome; "added" is how many were new and
   // ingested locally; "skippedDead" is orphan rows we've learned not to
-  // retry; "dead" is the cumulative dead-path count for this session.
+  // retry; "skippedCap" is rows we refused to pull because the local cloud
+  // pool is already at MAX_CLOUD_SAMPLES.
   console.log('[cloud] pull: remote=' + remote.length + ' added=' + added
     + ' skippedDead=' + skippedDead + ' dead=' + deadCloudPaths.size
+    + ' skippedCap=' + skippedCap + ' cloudInPool=' + cloudCount
     + ' genome=' + state.genome.id.slice(0, 8)
     + ' includeShared=' + !!state.includeSharedPool);
 }

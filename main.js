@@ -2172,12 +2172,16 @@ function drawViz(dt) {
     const dx = p.dx, dy = p.dy;
     const age = (now - s.recordedAt) / 1000;
     const dotR = 3 + s.survivalScore * 3;
-    // Fade is driven by this sample's own survivalScore so each dot tracks
-    // its individual decay: fresh (1.0) stays in birth colour, cull-edge
-    // (0.05) is pure black. Derived children start at 0.8, so they're
-    // slightly pre-dimmed from birth — correct, they already carry
-    // degradation from their parent.
-    const fadeT = Math.max(0, Math.min(1, (1 - s.survivalScore) / (1 - DEATH_SCORE)));
+    // Fade is driven by the sample's own decay state, not wall-clock age.
+    // mutationLevel grows deterministically every evolveTick so it gives
+    // visible variance across samples of different ages and genomes with
+    // different degradationRates. survivalScore decays stochastically and
+    // is what the culler checks, so we also fold in (1 - survivalScore)
+    // so a sample at the cull edge always hits pure black. Whichever of
+    // the two is further along drives the dot colour.
+    const mutFade = Math.max(0, Math.min(1, s.mutationLevel));
+    const survFade = Math.max(0, Math.min(1, (1 - s.survivalScore) / (1 - DEATH_SCORE)));
+    const fadeT = Math.max(mutFade, survFade);
     const step = Math.min(FADE_STEPS, Math.floor(fadeT * FADE_STEPS));
     const dotColor = s.fromCloud ? viz.mintFadePalette[step] : viz.moodFadePalette[step];
     c.fillStyle = dotColor + 'cc';

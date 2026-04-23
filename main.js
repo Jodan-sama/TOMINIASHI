@@ -16,11 +16,13 @@ const LS_GENOME_HOME = 'tn_genome_home_v1'; // set on first boot; NEVER overwrit
 const LS_SHARE_BREATHS = 'tn_share_breaths';
 const LS_INCLUDE_SHARED = 'tn_include_shared';
 
-// Soft capacity targets. autoRecord refuses to capture past MAX_TOTAL_SAMPLES
-// and the cloud pull + evolve tick prune cloud-origin samples down to half
-// of that so the pool can't be drowned by incoming public breaths.
-const MAX_TOTAL_SAMPLES = 40;
-const MAX_CLOUD_SAMPLES = Math.floor(MAX_TOTAL_SAMPLES / 2);
+// Soft caps. autoRecord refuses to capture another mic sample once we
+// already hold MAX_MIC_SAMPLES of our own — derived children grow on top
+// of that and are bounded by survival-score decay, not a hard count.
+// Cloud pulls get their own cap (~half of the mic anchor) so the public
+// pool can't drown out the instrument's own recordings.
+const MAX_MIC_SAMPLES = 40;
+const MAX_CLOUD_SAMPLES = Math.floor(MAX_MIC_SAMPLES / 2);
 
 const state = {
   ctx: null, master: null, revSend: null, delSend: null, analyser: null, analyserData: null,
@@ -1923,7 +1925,11 @@ function scheduleStep(i, when) {
 
 async function autoRecord() {
   if (state.recording) return;
-  if (state.samples.length >= MAX_TOTAL_SAMPLES) return;
+  // Only count our own mic-origin samples toward the cap. Derived
+  // children and cloud-pulled samples live on top, bounded separately.
+  const ownMicCount = state.samples.reduce(
+    (n, s) => n + (s.source === 'mic' && !s.fromCloud ? 1 : 0), 0);
+  if (ownMicCount >= MAX_MIC_SAMPLES) return;
   if (!micStream) return;
   // Square-root weighting biases the distribution toward the longer end
   // of the range so more breath ends up captured per take.
@@ -2135,8 +2141,14 @@ function drawViz(dt) {
     const hex = (n) => n.toString(16).padStart(2, '0');
     return '#' + hex(r) + hex(g) + hex(b);
   };
-  const FADE_SECONDS = 24 * 3600; // 24h from birth until a dot is pure black
-  const FADE_STEPS = 32;          // discrete palette: one colour per ~45 min
+  // Fade is tied to the sample's own decay, not wall-clock age — different
+  // samples survive at different rates, so a static fade window would lie.
+  // survivalScore starts at 1.0 (fresh mic) or 0.8 (derived) and drifts
+  // down stochastically; anything below 0.05 is about to be culled. We
+  // map [1.0 .. 0.05] onto [full colour .. pure black] in FADE_STEPS
+  // discrete buckets so the palette stays cheap to look up.
+  const FADE_STEPS = 32;
+  const DEATH_SCORE = 0.05;
   const BLACK = '#000000';
   // Stepped fade palettes so we don't re-lerp for every dot every frame.
   // The mint palette is constant — build it once and cache on viz. The
@@ -2160,12 +2172,13 @@ function drawViz(dt) {
     const dx = p.dx, dy = p.dy;
     const age = (now - s.recordedAt) / 1000;
     const dotR = 3 + s.survivalScore * 3;
-    // Every dot starts in its natural colour (mint for cloud, mood colour
-    // for local) and fades smoothly toward pure black as it ages. The age
-    // is quantised into FADE_STEPS buckets so we read the dot colour out
-    // of a pre-built palette instead of lerping 300+ times per frame.
-    const ageT = Math.min(1, age / FADE_SECONDS);
-    const step = Math.min(FADE_STEPS, Math.floor(ageT * FADE_STEPS));
+    // Fade is driven by this sample's own survivalScore so each dot tracks
+    // its individual decay: fresh (1.0) stays in birth colour, cull-edge
+    // (0.05) is pure black. Derived children start at 0.8, so they're
+    // slightly pre-dimmed from birth — correct, they already carry
+    // degradation from their parent.
+    const fadeT = Math.max(0, Math.min(1, (1 - s.survivalScore) / (1 - DEATH_SCORE)));
+    const step = Math.min(FADE_STEPS, Math.floor(fadeT * FADE_STEPS));
     const dotColor = s.fromCloud ? viz.mintFadePalette[step] : viz.moodFadePalette[step];
     c.fillStyle = dotColor + 'cc';
     c.beginPath();

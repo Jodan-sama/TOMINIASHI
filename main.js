@@ -2173,13 +2173,14 @@ function drawViz(dt) {
     const age = (now - s.recordedAt) / 1000;
     const dotR = 3 + s.survivalScore * 3;
     // Fade is driven by the sample's own decay state, not wall-clock age.
-    // mutationLevel grows deterministically every evolveTick so it gives
-    // visible variance across samples of different ages and genomes with
-    // different degradationRates. survivalScore decays stochastically and
-    // is what the culler checks, so we also fold in (1 - survivalScore)
-    // so a sample at the cull edge always hits pure black. Whichever of
-    // the two is further along drives the dot colour.
-    const mutFade = Math.max(0, Math.min(1, s.mutationLevel));
+    // mutationLevel contributes through a sqrt curve so even modest decay
+    // (0.1) is visibly dim and we don't need samples to crawl all the way
+    // to mutation=1 before the eye can tell. That contribution is capped
+    // at 0.85 so "pure black" is reserved for the cull edge, which only
+    // (1 - survivalScore) can push the fade into. Whichever of the two
+    // decay signals is further along drives the dot colour.
+    const mut = Math.max(0, Math.min(1, s.mutationLevel));
+    const mutFade = 0.85 * Math.sqrt(mut);
     const survFade = Math.max(0, Math.min(1, (1 - s.survivalScore) / (1 - DEATH_SCORE)));
     const fadeT = Math.max(mutFade, survFade);
     const step = Math.min(FADE_STEPS, Math.floor(fadeT * FADE_STEPS));

@@ -2113,23 +2113,38 @@ function drawViz(dt) {
     const hex = (n) => n.toString(16).padStart(2, '0');
     return '#' + hex(r) + hex(g) + hex(b);
   };
-  const FADE_SECONDS = 600; // ~10 minutes to fully faded
+  const FADE_SECONDS = 24 * 3600; // 24h from birth until a dot is pure black
+  const FADE_STEPS = 32;          // discrete palette: one colour per ~45 min
+  const BLACK = '#000000';
+  // Stepped fade palettes so we don't re-lerp for every dot every frame.
+  // The mint palette is constant — build it once and cache on viz. The
+  // mood palette depends on the current mood colour so we rebuild it
+  // only when `col` actually changes (mood-stable frames reuse the cache).
+  if (!viz.mintFadePalette) {
+    viz.mintFadePalette = new Array(FADE_STEPS + 1);
+    for (let i = 0; i <= FADE_STEPS; i++) {
+      viz.mintFadePalette[i] = lerpHex('#8fe3b5', BLACK, i / FADE_STEPS);
+    }
+  }
+  if (!viz.moodFadePalette || viz.moodFadePaletteKey !== col) {
+    viz.moodFadePalette = new Array(FADE_STEPS + 1);
+    for (let i = 0; i <= FADE_STEPS; i++) {
+      viz.moodFadePalette[i] = lerpHex(col, BLACK, i / FADE_STEPS);
+    }
+    viz.moodFadePaletteKey = col;
+  }
   for (const p of positions) {
     const s = p.s;
     const dx = p.dx, dy = p.dy;
     const age = (now - s.recordedAt) / 1000;
     const dotR = 3 + s.survivalScore * 3;
-    // Cloud-origin samples fade from mint into a cool mint-grey with age.
-    // Local mic recordings start on the mood colour and drift toward the
-    // fossil tan — whichever arrives first, pure age or mutation level.
+    // Every dot starts in its natural colour (mint for cloud, mood colour
+    // for local) and fades smoothly toward pure black as it ages. The age
+    // is quantised into FADE_STEPS buckets so we read the dot colour out
+    // of a pre-built palette instead of lerping 300+ times per frame.
     const ageT = Math.min(1, age / FADE_SECONDS);
-    let dotColor;
-    if (s.fromCloud) {
-      dotColor = lerpHex('#8fe3b5', '#8a9590', ageT);                // mint → grey
-    } else {
-      const fadeT = Math.max(ageT, s.mutationLevel);
-      dotColor = lerpHex(col, '#8a7f6c', fadeT);                     // mood → fossil
-    }
+    const step = Math.min(FADE_STEPS, Math.floor(ageT * FADE_STEPS));
+    const dotColor = s.fromCloud ? viz.mintFadePalette[step] : viz.moodFadePalette[step];
     c.fillStyle = dotColor + 'cc';
     c.beginPath();
     c.arc(dx, dy, dotR, 0, Math.PI * 2);

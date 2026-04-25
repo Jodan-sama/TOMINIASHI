@@ -2311,7 +2311,25 @@ function wireControls() {
     btn.textContent = '◉ recording…';
     // Biased random (sqrt weighting) so manual takes skew longer — 3.0s
     // floor, ~5.5s ceiling, median around 4.8s.
-    try { await recordBreath(3000 + Math.pow(Math.random(), 0.5) * 2500); } catch (e) { console.error(e); }
+    try {
+      await recordBreath(3000 + Math.pow(Math.random(), 0.5) * 2500);
+    } catch (e) {
+      console.error('[record] failed:', e);
+      const status = document.getElementById('status');
+      if (status) {
+        // NotAllowedError on iOS means Safari has cached a previous deny
+        // for this origin and won't even prompt again. The page can't
+        // override that; the user has to flip the toggle in site
+        // settings. Surface that path instead of leaving them stuck on
+        // a generic retry message.
+        const denied = e && (e.name === 'NotAllowedError' || /denied|not allowed/i.test(e.message || ''));
+        status.classList.remove('hidden');
+        status.textContent = denied
+          ? 'mic blocked — tap aA in URL bar → Website Settings → Microphone → Allow'
+          : 'mic error — try again';
+        setTimeout(() => status.classList.add('hidden'), 7000);
+      }
+    }
     btn.classList.remove('recording');
     btn.textContent = '◉ record breath';
   });
@@ -2627,10 +2645,9 @@ async function boot() {
   const kick = async () => {
     if (state.started) return;
     state.started = true;
-    status.textContent = 'requesting mic…';
+    status.textContent = 'starting…';
     try {
       await initAudio();
-      await ensureMic();
       startTransport();
       startRainPad();
       // Pull cloud samples into IDB + state in the background, then run
@@ -2644,13 +2661,20 @@ async function boot() {
       // that anyone has uploaded since.  Mint dots will appear in the
       // viz when they arrive.
       schedulePeriodicCloudPull();
+      // Try to grab the mic in the background. Failure is silent — many
+      // users (especially on iOS where Safari caches denials across
+      // sessions) just want to listen first. recordBreath calls
+      // ensureMic again when the user actually presses Record, which
+      // is the only moment we need a working mic, and that's where
+      // we surface a clear error if the OS won't grant access.
+      ensureMic().catch(e => console.warn('[mic] not granted yet:', e && e.message));
       status.textContent = state.samples.length
         ? 'playing — move mouse to modulate · ✦ excite · ~ chill'
         : 'record a breath (◉) to give it material — melody awaits samples';
       setTimeout(() => status.classList.add('hidden'), 2600);
     } catch (e) {
       console.error(e);
-      status.textContent = 'mic permission denied — click to retry';
+      status.textContent = 'audio init failed — click to retry';
       state.started = false;
     }
   };

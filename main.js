@@ -2661,13 +2661,11 @@ async function boot() {
       // that anyone has uploaded since.  Mint dots will appear in the
       // viz when they arrive.
       schedulePeriodicCloudPull();
-      // Try to grab the mic in the background. Failure is silent — many
-      // users (especially on iOS where Safari caches denials across
-      // sessions) just want to listen first. recordBreath calls
-      // ensureMic again when the user actually presses Record, which
-      // is the only moment we need a working mic, and that's where
-      // we surface a clear error if the OS won't grant access.
-      ensureMic().catch(e => console.warn('[mic] not granted yet:', e && e.message));
+      // Deliberately not touching the mic on boot. iOS routes output
+      // through the earpiece speaker (much quieter) the moment
+      // getUserMedia is active — even just calling it in the background
+      // dims everything. Mic is requested for real when the user hits
+      // Record Breath; that's the only place we actually need it.
       status.textContent = state.samples.length
         ? 'playing — move mouse to modulate · ✦ excite · ~ chill'
         : 'record a breath (◉) to give it material — melody awaits samples';

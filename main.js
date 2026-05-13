@@ -697,6 +697,17 @@ async function ensureMic() {
   micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   return micStream;
 }
+// Stop every track on the mic stream and drop the reference. On iOS this
+// is what flips the audio session from "playAndRecord" (earpiece) back to
+// "playback" (loudspeaker) — without it, even a finished recording leaves
+// the device routing through the ear speaker forever. The next ensureMic
+// call grabs a fresh stream; iOS doesn't re-prompt once permission has
+// already been granted for the session.
+function releaseMic() {
+  if (!micStream) return;
+  try { micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+  micStream = null;
+}
 async function recordBreath(durMs = 3000) {
   if (state.recording) return null;
   state.recording = true;
@@ -814,6 +825,11 @@ async function recordBreath(durMs = 3000) {
     return record;
   } finally {
     state.recording = false;
+    // Release the mic so iOS exits the playAndRecord audio session and
+    // audio routes back to the loudspeaker. ensureMic() will reopen on
+    // the next take — no fresh permission prompt unless the user has
+    // since revoked access at the OS level.
+    releaseMic();
   }
 }
 // ======== VOICE / CHOPPER ========

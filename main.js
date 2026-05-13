@@ -707,6 +707,16 @@ function releaseMic() {
   if (!micStream) return;
   try { micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
   micStream = null;
+  // Even after the tracks are gone, iOS often keeps the audio session
+  // pinned in a low-volume "voice" mode (everything plays through both
+  // speakers but quietly). Bouncing the AudioContext through a
+  // suspend/resume cycle forces Safari to re-evaluate the session
+  // category and flip it back to media mode at full speaker volume.
+  // The cycle is short enough that the music doesn't audibly stutter.
+  const ctx = state.ctx;
+  if (ctx && typeof ctx.suspend === 'function' && typeof ctx.resume === 'function') {
+    ctx.suspend().then(() => ctx.resume()).catch(() => {});
+  }
 }
 async function recordBreath(durMs = 3000) {
   if (state.recording) return null;

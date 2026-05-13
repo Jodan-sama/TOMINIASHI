@@ -214,6 +214,28 @@ function makeIR(ctx, dur, decay) {
   }
   return ir;
 }
+// iOS Safari boots the audio session in "ambient" mode, which keeps the
+// AudioContext silent regardless of volume — respects the silent switch
+// and won't drive the loudspeaker for Web Audio output. Playing a silent
+// looping <audio playsinline> element during the user gesture flips the
+// session into "playback" mode so the rest of our audio is actually
+// audible from the first tap, even before (or without) any mic activity.
+// Once it's playing it stays alive for the page lifetime.
+let iosPinAudio = null;
+function pinIOSMediaSession() {
+  if (iosPinAudio) return;
+  try {
+    const sr = 8000;
+    const silentPcm = new Float32Array(sr); // 1 s of zeros
+    const url = URL.createObjectURL(pcmToWavBlob(silentPcm, sr));
+    iosPinAudio = new Audio(url);
+    iosPinAudio.loop = true;
+    iosPinAudio.setAttribute('playsinline', '');
+    iosPinAudio.muted = false;
+    iosPinAudio.volume = 1;
+    iosPinAudio.play().catch((e) => console.warn('[ios pin] play failed:', e && e.message));
+  } catch (e) { console.warn('[ios pin]', e); }
+}
 async function initAudio() {
   const Ctor = window.AudioContext || window.webkitAudioContext;
   const ctx = new Ctor();
@@ -2672,6 +2694,9 @@ async function boot() {
     if (state.started) return;
     state.started = true;
     status.textContent = 'starting…';
+    // Unlock the iOS audio session synchronously while we're still
+    // inside the user gesture — has to happen before the first await.
+    pinIOSMediaSession();
     try {
       await initAudio();
       startTransport();

@@ -725,16 +725,16 @@ async function ensureMic() {
 // the device routing through the ear speaker forever. The next ensureMic
 // call grabs a fresh stream; iOS doesn't re-prompt once permission has
 // already been granted for the session.
-function releaseMic() {
-  if (!micStream) return;
-  try { micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
-  micStream = null;
-  // Pause-and-restart the silent pin audio. iOS evaluates the audio
-  // session category on transitions; just letting the pin keep looping
-  // isn't enough to flip back from "playAndRecord" (earpiece) to
-  // "playback" (loudspeaker) once a mic was active. A pause + play
-  // counts as a fresh media playback start and nudges iOS to drop the
-  // record category since nothing is recording anymore.
+// Pause-and-restart the silent pin audio + bounce the AudioContext.
+// Used after recording (to escape iOS's playAndRecord mode) and bound
+// to viz canvas taps so the user can manually kick the session back
+// to playback if iOS holds the earpiece routing for any other reason.
+let lastNudgeAt = 0;
+function nudgeIOSMediaSession() {
+  // Throttle so a drag doesn't spam pause/play and audibly stutter.
+  const now = Date.now();
+  if (now - lastNudgeAt < 400) return;
+  lastNudgeAt = now;
   if (iosPinAudio) {
     try {
       iosPinAudio.pause();
@@ -742,12 +742,20 @@ function releaseMic() {
       iosPinAudio.play().catch(() => {});
     } catch (e) {}
   }
-  // Belt-and-braces: bounce the AudioContext through suspend/resume in
-  // case the pin restart alone wasn't enough to flip the session.
   const ctx = state.ctx;
   if (ctx && typeof ctx.suspend === 'function' && typeof ctx.resume === 'function') {
     ctx.suspend().then(() => ctx.resume()).catch(() => {});
   }
+}
+function releaseMic() {
+  if (!micStream) return;
+  try { micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+  micStream = null;
+  // iOS keeps the playAndRecord session active even after the mic is
+  // gone. Nudge the session back to playback by restarting the silent
+  // pin and bouncing the AudioContext.
+  lastNudgeAt = 0; // ensure the post-record nudge isn't throttled out
+  nudgeIOSMediaSession();
 }
 async function recordBreath(durMs = 3000) {
   if (state.recording) return null;
@@ -2027,7 +2035,14 @@ function initInput() {
   }, { passive: true });
   cv.addEventListener('touchstart', (e) => {
     if (e.touches.length) onMove(e.touches[0].clientX, e.touches[0].clientY);
+    // Treat any tap on the visualizer as a manual "kick the speaker"
+    // gesture. iOS sometimes locks the audio session into playAndRecord
+    // (earpiece, quiet) after a recording even when we release the
+    // mic — restarting the silent pin + bouncing the AudioContext here
+    // gives the user an explicit way to flip it back to the loudspeaker.
+    if (state.started) nudgeIOSMediaSession();
   }, { passive: true });
+  cv.addEventListener('mousedown', () => { if (state.started) nudgeIOSMediaSession(); });
   // continuously drive the perf / ambient filter cutoffs + drum bus from mouse Y + excitement
   const driveFilter = () => {
     if (state.ctx) {

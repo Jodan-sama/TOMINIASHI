@@ -729,12 +729,21 @@ function releaseMic() {
   if (!micStream) return;
   try { micStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
   micStream = null;
-  // Even after the tracks are gone, iOS often keeps the audio session
-  // pinned in a low-volume "voice" mode (everything plays through both
-  // speakers but quietly). Bouncing the AudioContext through a
-  // suspend/resume cycle forces Safari to re-evaluate the session
-  // category and flip it back to media mode at full speaker volume.
-  // The cycle is short enough that the music doesn't audibly stutter.
+  // Pause-and-restart the silent pin audio. iOS evaluates the audio
+  // session category on transitions; just letting the pin keep looping
+  // isn't enough to flip back from "playAndRecord" (earpiece) to
+  // "playback" (loudspeaker) once a mic was active. A pause + play
+  // counts as a fresh media playback start and nudges iOS to drop the
+  // record category since nothing is recording anymore.
+  if (iosPinAudio) {
+    try {
+      iosPinAudio.pause();
+      iosPinAudio.currentTime = 0;
+      iosPinAudio.play().catch(() => {});
+    } catch (e) {}
+  }
+  // Belt-and-braces: bounce the AudioContext through suspend/resume in
+  // case the pin restart alone wasn't enough to flip the session.
   const ctx = state.ctx;
   if (ctx && typeof ctx.suspend === 'function' && typeof ctx.resume === 'function') {
     ctx.suspend().then(() => ctx.resume()).catch(() => {});

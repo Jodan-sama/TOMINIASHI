@@ -4,8 +4,8 @@
 // unique identity).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export const SUPABASE_URL = 'https://idxnrvlaqzmywmsoxdbw.supabase.co';
-export const SUPABASE_KEY = 'sb_publishable_s44QLf2N40pA2d811cP8CQ_4CIvUOqD';
+export const SUPABASE_URL = 'https://lueovxcoqrkjdjxfvwng.supabase.co';
+export const SUPABASE_KEY = 'sb_publishable__lKNH5ui_nFn57fiAx2VDg_0yShDBro';
 export const BUCKET = 'tn-fragments';
 
 let client = null;

@@ -831,6 +831,10 @@ async function recordBreath(durMs = 3000) {
     meta.shared = record.shared;
     meta.storagePath = null;
     state.samples.push(meta);
+    // A fresh breath becomes the lead voice immediately, so whoever just
+    // recorded hears it within the next few steps instead of waiting for a
+    // random pickSection draw from a 40+ sample pool.
+    state.melodyVoices.leadId = record.id;
     // Fire-and-forget cloud upload. Encode the normalized PCM as a WAV so
     // the stored file carries an explicit duration in its header (webm from
     // MediaRecorder often ships with a missing/invalid Duration, which is
@@ -1105,7 +1109,23 @@ async function deriveSample(parentMeta) {
     });
   }
 }
+// Re-entrancy guard. The RAF loop calls this whenever lastEvolveAt is more
+// than 30s old, but a tick awaits an IndexedDB write for every sample, so it
+// spans several frames — previously each of those frames started ANOTHER
+// tick, and a handful of concurrent ticks all decayed samples, derived
+// children and bumped the generation at once. Stamp lastEvolveAt up front and
+// hold a flag until the tick has fully finished.
 async function evolveTick() {
+  if (state.evolving) return;
+  state.evolving = true;
+  state.lastEvolveAt = Date.now();
+  try {
+    await evolveTickInner();
+  } finally {
+    state.evolving = false;
+  }
+}
+async function evolveTickInner() {
   const params = state.genome.params;
   const cloudSampleUpdates = [];
   // Young samples get immunity from decay and culling for a couple of
@@ -1199,9 +1219,30 @@ function pickSamplesForMood(mood) {
   });
   return out.length ? out : state.samples;
 }
+// Weighted draw. Two gentle biases on top of a uniform pick:
+//   · recency — a breath recorded in the last 3 minutes draws at 3×, so the
+//     person who just recorded actually hears it while it is still new.
+//   · health  — weight follows survivalScore (floored at 0.35), so a withering
+//     sample fades out of the mix gradually instead of playing at full
+//     frequency right up until evolution culls it.
+const PICK_FRESH_MS = 3 * 60_000;
 function pickSample(pool) {
   if (!pool || !pool.length) return null;
-  return pool[Math.floor(state.prng() * pool.length)];
+  const now = Date.now();
+  let total = 0;
+  const weights = pool.map((s) => {
+    const health = Math.max(0.35, Math.min(1, s.survivalScore == null ? 1 : s.survivalScore));
+    const fresh = (now - (s.recordedAt || 0)) < PICK_FRESH_MS ? 3 : 1;
+    const w = health * fresh;
+    total += w;
+    return w;
+  });
+  let r = state.prng() * total;
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return pool[i];
+  }
+  return pool[pool.length - 1];
 }
 function stepMelody() {
   const bias = state.genome.params.melodicBias;
@@ -1723,7 +1764,7 @@ function getVoiceSample(slot) {
 function maybeVoiceSample(slot, mixProb = 0.3) {
   if (state.samples.length > 1 && state.prng() < mixProb) {
     const pool = pickSamplesForMood(state.mood);
-    if (pool.length) return pool[Math.floor(state.prng() * pool.length)];
+    if (pool.length) return pickSample(pool);
   }
   return getVoiceSample(slot);
 }
